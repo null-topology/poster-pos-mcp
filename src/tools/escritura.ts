@@ -61,9 +61,20 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
     }
     const r = await ctx.api.post(a.cuenta, plan.metodo, plan.payload, { form: plan.form });
     const err = errorPoster(r);
-    if (err || (r.response === undefined && r.success !== 1)) {
-      auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err ?? "sin response" });
-      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err ?? resumenPoster(r), payload: plan.payload };
+    if (err) {
+      auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err });
+      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err, payload: plan.payload };
+    }
+    if (r.response === undefined && r.success !== 1) {
+      // No error and no result: nothing shows the write was rejected, so its outcome is unknown.
+      // The summary of the reply is best effort; a reply it cannot format still gives the unknown outcome.
+      let resumen = "";
+      try {
+        resumen = `: ${resumenPoster(r)}`;
+      } catch {
+        // The reply cannot be formatted; the message goes without it.
+      }
+      throw new EscrituraIncierta(`Póster respondió sin error y sin response${resumen}`);
     }
     // The write went through: a failed read-back must not turn it into an error, or a retry duplicates it.
     let verificacion: { ok: boolean; detalle: unknown };
@@ -750,8 +761,12 @@ export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { prod
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
     const nombre = String(p.product_name).trim();
     if (!/\(old\)$/i.test(nombre)) throw new Error(`"${nombre}" no termina en "(old)": primero ocúltalo con hide_dish.`);
-    const visible = (p.spots ?? []).some((s: Obj) => String(s.visible) === "1");
-    if (visible) throw new Error(`"${nombre}" sigue visible en algún spot: no se borra.`);
+    // Fails closed: deleted only when every spot is read and explicitly hidden ("0", as hide_dish writes).
+    const spots: unknown[] = Array.isArray(p.spots) ? p.spots : [];
+    if (spots.some((s) => String((s as Obj | null)?.visible) === "1")) throw new Error(`"${nombre}" sigue visible en algún spot: no se borra.`);
+    if (!spots.length || !spots.every((s) => String((s as Obj | null)?.visible) === "0")) {
+      throw new Error(`"${nombre}" no muestra todos sus spots como ocultos (visibilidad ausente o desconocida): no se borra.`);
+    }
     const payload = { dish_id: a.product_id };
     return {
       herramienta: "delete_old_dish",
@@ -936,9 +951,11 @@ export async function crearTransaccion(
         // Ventana que cubre el día de la transacción y hoy (por zona horaria / fecha de aplicación).
         const diaTx = fechaPoster(fecha.slice(0, 10)), hoy = fechaPoster(hoyMx());
         const desde = diaTx <= hoy ? diaTx : hoy, hasta = diaTx >= hoy ? diaTx : hoy;
-        // A failed read throws: the write stays aplicado with a failed read-back, never "not found".
-        const txns = (await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", { dateFrom: desde, dateTo: hasta })) ?? [];
-        const t = txns.find((x) => num(x.transaction_id) === id);
+        // A failed read, or one that gives no list, throws: the write stays aplicado with a failed
+        // read-back, never "not found".
+        const txns: unknown = await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", { dateFrom: desde, dateTo: hasta });
+        if (!Array.isArray(txns)) throw new Error("finance.getTransactions no devolvió una lista de transacciones.");
+        const t = (txns as Obj[]).find((x) => num(x.transaction_id) === id);
         if (!t) {
           return { ok: false, detalle: { transaction_id: id, alerta: "No se encontró la transacción al releer finance.getTransactions del día. Verifícala manualmente en el panel antes de reintentar." } };
         }

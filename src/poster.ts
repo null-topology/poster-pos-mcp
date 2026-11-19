@@ -9,9 +9,10 @@ export interface PosterApi {
 }
 
 /**
- * The HTTP attempt of a write failed after fetch was called (network error, timeout, a reply that is not
- * JSON, or a reply with HTTP status 500 or higher whatever its body). The request may have reached
- * Poster, so the write may have been applied.
+ * The outcome of a write is unknown: its HTTP attempt failed after fetch was called (network error,
+ * timeout, a reply that is not JSON, or a reply with HTTP status 500 or higher whatever its body), or
+ * the reply has no error and no result. The request may have reached Poster, so the write may have
+ * been applied.
  */
 export class EscrituraIncierta extends Error {
   constructor(mensaje: string) {
@@ -96,8 +97,17 @@ export const posterHttp: PosterApi = {
     } catch (e) {
       throw new EscrituraIncierta(String((e as Error)?.message ?? e));
     }
-    // A server error does not prove the write was not applied, whatever its body says.
-    if (r.estado >= 500) throw new EscrituraIncierta(`Póster respondió HTTP ${r.estado}: ${resumenPoster(r.cuerpo)}`);
+    // A server error does not prove the write was not applied, whatever its body says. The summary of the
+    // body is best effort: a body it cannot format still gives EscrituraIncierta, without the summary.
+    if (r.estado >= 500) {
+      let resumen = "";
+      try {
+        resumen = `: ${resumenPoster(r.cuerpo)}`;
+      } catch {
+        // The body cannot be formatted; the message goes without it.
+      }
+      throw new EscrituraIncierta(`Póster respondió HTTP ${r.estado}${resumen}`);
+    }
     return r.cuerpo as never;
   },
 };

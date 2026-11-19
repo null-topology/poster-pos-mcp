@@ -413,7 +413,7 @@ describe("redaction", () => {
     expect(e?.message).not.toContain("ZqU4Tok");
   });
 
-  it("W19 a write rejected without a usable error field returns a redacted, clipped diagnostic of the reply, never the raw reply", async () => {
+  it("W19 a write reply with no error field and no result is an unknown outcome whose diagnostic of the reply is redacted and clipped, never the raw reply", async () => {
     const { W, archivo } = await cargar(CON_ENV);
     // The token straddles the 300-character limit of the diagnostic.
     const inicio = JSON.stringify({ success: 0, relleno: "", detail: "" }).length - 2;
@@ -422,25 +422,31 @@ describe("redaction", () => {
     expect(posicion).toBeLessThan(300);
     expect(posicion + TOKEN_A.length).toBeGreaterThan(300);
     const api: PosterApi = { get: async () => [] as never, post: (async () => respuesta) as never };
-    const r: Obj = await W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true });
-    expect(r.modo).toBe("rechazado");
-    expect(typeof r.error).toBe("string");
-    expect(r.error.length).toBeLessThanOrEqual(300);
-    expect(r.error).toContain('"success":0');
-    expect(r.error).toContain("***");
-    expect(JSON.stringify(r)).not.toContain("ZqU4");
-    expect(modos(archivo())).toEqual(["rechazado"]);
+    const e = await W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }).then(
+      () => null,
+      (x: unknown) => x as Error,
+    );
+    expect(e).toBeInstanceOf(Error);
+    expect(e?.message).toMatch(/puede haberse aplicado/);
+    const lineas = archivo();
+    expect(modos(lineas)).toEqual(["desconocido"]);
+    const error: string = JSON.parse(lineas[0]).error;
+    const diagnostico = error.slice(error.indexOf('{"success":0'));
+    expect(diagnostico.startsWith('{"success":0')).toBe(true);
+    expect(diagnostico.length).toBeLessThanOrEqual(300);
+    expect(diagnostico).toContain("***");
+    for (const texto of [e?.message ?? "", lineas[0]]) expect(texto).not.toContain("ZqU4");
   });
 
-  it("W20 a rejected write reply { success: 0, detail: <token> } reaches the client without the token", async () => {
-    const { M } = await cargar(CON_ENV);
+  it("W20 a write reply { success: 0, detail: <token> } with no error field reaches the client as an unknown outcome without the token", async () => {
+    const { M, archivo } = await cargar(CON_ENV);
     falsearFetch((_url, init) => json(init?.method === "POST" ? { success: 0, detail: TOKEN_B } : { response: [] }));
     const llamar = await conectar(M);
     const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
-    expect(r.isError).toBe(false);
-    const resultado = JSON.parse(r.texto);
-    expect(resultado.modo).toBe("rechazado");
-    expect(typeof resultado.error).toBe("string");
+    expect(r.isError).toBe(true);
+    expect(r.texto).toMatch(/puede haberse aplicado/);
+    expect(r.texto).toContain('"success":0');
+    expect(modos(archivo())).toEqual(["desconocido"]);
     for (const s of [TOKEN_B, encodeURIComponent(TOKEN_B), "ZqU4Token"]) expect(r.texto, s).not.toContain(s);
   });
 
@@ -637,13 +643,21 @@ describe("audit lines: severity, malformed events and corrupt files", () => {
 });
 
 describe("redaction: structural results, clipped texts and parse failures", () => {
-  it("W33 a digit-only token equal to a number in a read result leaves the client text valid JSON and the number unchanged", async () => {
+  it("W33 a number equal to a 16-digit env token becomes \"***\" in the client text and in both audit lines, which stay valid JSON; other numbers are unchanged", async () => {
     const digitos = "1234567890123456";
-    const { M } = await cargar({ ...CON_ENV, POSTER_TOKEN_TIENDA_A: digitos });
-    falsearFetch(() => json({ response: { precio: 1234567890123456, lista: [1234567890123456, 7], nota: `ref ${digitos}` } }));
+    const { A, M, archivo, salida } = await cargar({ ...CON_ENV, POSTER_TOKEN_TIENDA_A: digitos });
+    falsearFetch(() => json({ response: { precio: 1234567890123456, lista: [1234567890123456, 7], otro: 1234567890123457, nota: `ref ${digitos}` } }));
     const r = await (await conectar(M))("poster_get", { cuenta: "tienda-a", metodo: "clients.getGroups" });
     expect(r.isError).toBe(false);
-    expect(JSON.parse(r.texto).respuesta).toEqual({ precio: 1234567890123456, lista: [1234567890123456, 7], nota: "ref ***" });
+    expect(JSON.parse(r.texto).respuesta).toEqual({ precio: "***", lista: ["***", 7], otro: 1234567890123457, nota: "ref ***" });
+    expect(r.texto).not.toContain(digitos);
+    A.auditar({ ...EVENTO, modo: "dry-run", payload: { monto: 1234567890123456, otro: 1234567890123457 } });
+    const lineas = [...archivo(), ...salida()];
+    expect(lineas).toHaveLength(2);
+    for (const linea of lineas) {
+      expect(JSON.parse(linea).payload).toEqual({ monto: "***", otro: 1234567890123457 });
+      expect(linea).not.toContain(digitos);
+    }
   });
 
   it("W34 a one-character Secret Manager token over-redacts strings but leaves the client text and both audit lines valid JSON with numbers unchanged", async () => {
@@ -768,5 +782,140 @@ describe("redaction: structural results, clipped texts and parse failures", () =
     expect(r.texto).toContain("clients.getGroups");
     expect(r.texto).toContain("no válido");
     for (const f of FRAGMENTOS) expect(r.texto, f).not.toContain(f);
+  });
+});
+
+/** JSON text of `n` nested arrays: it parses, but serializing the parsed value again overflows the stack. */
+const anidado = (n: number) => "[".repeat(n) + "]".repeat(n);
+
+describe("write outcome: replies without a result, read-backs without a list and unformattable replies", () => {
+  const SIN_RESULTADO: Array<[string, Obj]> = [
+    ["an empty object", {}],
+    ["success 0 and nothing else", { success: 0 }],
+  ];
+
+  it.each(SIN_RESULTADO)("W42 a write reply with no error field and no result (%s) fails with the unknown-outcome message and one desconocido audit entry naming the write", async (_caso, respuesta) => {
+    const { W, archivo, salida } = await cargar(CON_ENV);
+    const post = vi.fn(async () => respuesta);
+    const api: PosterApi = { get: async () => [] as never, post: post as never };
+    const e = await W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }).then(
+      () => null,
+      (x: unknown) => x as Error,
+    );
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(e).toBeInstanceOf(Error);
+    expect(e?.message).toMatch(/puede haberse aplicado/);
+    expect(e?.message).toMatch(/lectura antes de reintentar/);
+    expect(modos(archivo())).toEqual(["desconocido"]);
+    expect(modos(salida())).toEqual(["desconocido"]);
+    const entrada = JSON.parse(archivo()[0]);
+    expect(entrada.metodo).toBe("clients.createGroup");
+    expect(entrada.payload).toMatchObject({ client_groups_name: "Frecuentes", client_groups_discount: 10 });
+  });
+
+  it("W43 a write reply with an error field and no result stays rechazado, with the error in the result and in the audit entry", async () => {
+    const { W, archivo } = await cargar(CON_ENV);
+    const api: PosterApi = { get: async () => [] as never, post: (async () => ({ error: 7, message: "grupo inválido" })) as never };
+    const intento = W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true });
+    await expect(intento).resolves.toMatchObject({ modo: "rechazado" });
+    const r: Obj = await intento;
+    expect(r.error).toContain("grupo inválido");
+    const lineas = archivo();
+    expect(modos(lineas)).toEqual(["rechazado"]);
+    expect(JSON.parse(lineas[0]).error).toContain("grupo inválido");
+  });
+
+  it("W44 a write reply with no error field and no result that cannot be formatted is still an unknown outcome", async () => {
+    const { W, archivo } = await cargar(CON_ENV);
+    const datos = JSON.parse(anidado(200_000));
+    expect(() => JSON.stringify(datos)).toThrow(RangeError);
+    const api: PosterApi = { get: async () => [] as never, post: (async () => ({ datos })) as never };
+    const e = await W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }).then(
+      () => null,
+      (x: unknown) => x as Error,
+    );
+    expect(e).toBeInstanceOf(Error);
+    expect(e?.message).toMatch(/puede haberse aplicado/);
+    expect(modos(archivo())).toEqual(["desconocido"]);
+  });
+
+  const LECTURAS_SIN_LISTA: Array<[string, Obj]> = [
+    ["no response field", {}],
+    ["a null response", { response: null }],
+    ["success 1 and no response", { success: 1 }],
+  ];
+
+  it.each(LECTURAS_SIN_LISTA)("W45 a finance write whose read-back reply has %s is aplicado with a failed read-back and the do-not-repeat notice, never reported as not found", async (_caso, lectura) => {
+    const { W, P, archivo } = await cargar(CON_ENV);
+    const lecturas: Obj = {
+      "finance.getAccounts": { response: [{ account_id: "4", name: "CAJA DE COBRO" }] },
+      "finance.getCategories": { response: [{ category_id: "6", name: "Nómina" }] },
+      "finance.getTransactions": lectura,
+    };
+    falsearFetch((url) => json(lecturas[new URL(url).pathname.split("/").pop() ?? ""]));
+    const post = vi.fn(async () => ({ response: 7001 }));
+    const api: PosterApi = { get: P.posterHttp.get, post: post as never };
+    const r: Obj = await W.crearTransaccion(ctx(api), { cuenta: "tienda-b", tipo: "gasto", monto: 1806, account_id: 4, category_id: 6, comentario: "Pago", confirm: true });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(r.modo).toBe("aplicado");
+    expect(r.verificacion).toEqual({ ok: false, detalle: expect.stringContaining("finance.getTransactions") });
+    expect(JSON.stringify(r.verificacion)).not.toMatch(/No se encontró/);
+    expect(r.aviso).toMatch(/no la repitas/i);
+    expect(modos(archivo())).toEqual(["aplicado"]);
+  });
+
+  it("W46 a write reply with HTTP status 500 and a body too deeply nested to format is still an unknown outcome with the status in the message", async () => {
+    const { M, P, archivo } = await cargar(CON_ENV);
+    const cuerpo = anidado(200_000);
+    expect(() => JSON.stringify(JSON.parse(cuerpo))).toThrow(RangeError);
+    const { posts } = falsearFetch((_url, init) => (init?.method === "POST" ? new Response(cuerpo, { status: 500 }) : json({ response: [] })));
+    const e = await P.posterHttp.post("tienda-b", "clients.createGroup", {}).then(
+      () => null,
+      (x: unknown) => x as Error,
+    );
+    expect(e).toBeInstanceOf(P.EscrituraIncierta);
+    expect(e?.message).toContain("HTTP 500");
+    const w = await (await conectar(M))("create_client_group", { ...GRUPO, confirm: true });
+    expect(posts()).toBe(2);
+    expect(w.isError).toBe(true);
+    expect(w.texto).toMatch(/puede haberse aplicado/);
+    expect(w.texto).toContain("HTTP 500");
+    expect(modos(archivo())).toEqual(["desconocido"]);
+  });
+});
+
+describe("redaction: lowercase percent escapes and digit-only tokens", () => {
+  it("W47 the percent-encoded form of an env token spelled with lowercase hex digits is stripped from texts and audit lines", async () => {
+    const { T, A, archivo, salida } = await cargar(CON_ENV);
+    // TOKEN_B with its colon encoded as %3a; the token's own letters keep their case.
+    const minusculas = "770055%3aZqU4TokenBeta~1102";
+    expect(minusculas).not.toBe(encodeURIComponent(TOKEN_B));
+    expect(T.redactar(`a ${minusculas} b`)).toBe("a *** b");
+    A.auditar({ ...EVENTO, modo: "dry-run", payload: { nota: `ref ${minusculas} fin` } });
+    const lineas = [...archivo(), ...salida()];
+    expect(lineas).toHaveLength(2);
+    for (const linea of lineas) {
+      expect(JSON.parse(linea).payload.nota).toBe("ref *** fin");
+      expect(linea).not.toContain("ZqU4Token");
+    }
+  });
+
+  it("W48 a number equal to a cached digit-only Secret Manager token of 15 digits stays a number", async () => {
+    const digitos = "123456789012345";
+    const { M } = await cargar(CON_GSM, digitos);
+    falsearFetch(() => json({ response: { precio: 123456789012345, nota: `ref ${digitos}` } }));
+    const r = await (await conectar(M))("poster_get", { cuenta: "tienda-a", metodo: "clients.getGroups" });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.texto).respuesta).toEqual({ precio: 123456789012345, nota: "ref ***" });
+  });
+
+  it("W49 a number equal to a cached 16-digit Secret Manager token becomes \"***\" in the client text", async () => {
+    const digitos = "8765432109876543";
+    const { M } = await cargar(CON_GSM, digitos);
+    falsearFetch(() => json({ response: { monto: 8765432109876543, id: 21 } }));
+    const r = await (await conectar(M))("poster_get", { cuenta: "tienda-a", metodo: "clients.getGroups" });
+    expect(r.isError).toBe(false);
+    expect(JSON.parse(r.texto).respuesta).toEqual({ monto: "***", id: 21 });
+    expect(r.texto).not.toContain(digitos);
   });
 });

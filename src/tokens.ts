@@ -86,8 +86,14 @@ export async function tokenDe(cuenta: string): Promise<string> {
   return token;
 }
 
-/** Forms a known token can take in a text: literal, URL-encoded and escaped inside a JSON string. */
-const formas = (token: string) => [token, encodeURIComponent(token), JSON.stringify(token).slice(1, -1)];
+/**
+ * Forms a known token can take in a text: literal, URL-encoded (with uppercase and with lowercase hex
+ * digits in its %XX escapes; the token's own characters keep their case) and escaped inside a JSON string.
+ */
+const formas = (token: string) => {
+  const codificado = encodeURIComponent(token);
+  return [token, codificado, codificado.replace(/%[0-9A-F]{2}/g, (e) => e.toLowerCase()), JSON.stringify(token).slice(1, -1)];
+};
 
 /**
  * Redactor for the tokens known now. Every form of every known token is matched in one pass over the
@@ -124,14 +130,21 @@ export function redactar(texto: string): string {
 /**
  * Copy of `v` with every string and every object key redacted, for a single serialization afterwards.
  * The value is first normalized with one JSON round trip (applies `toJSON`, drops `undefined`; a
- * top-level `undefined` becomes `null`); numbers, booleans and `null` are never changed. Keys of one
- * object that redact to the same text are all kept: the later ones get " (2)", " (3)", ...
- * A circular value or a BigInt throws the TypeError of `JSON.stringify`.
+ * top-level `undefined` becomes `null`). A number whose text is exactly a known token made only of
+ * digits, at least 16 of them, becomes the string "***"; every other number, booleans and `null` are
+ * never changed. Keys of one object that redact to the same text are all kept: the later ones get
+ * " (2)", " (3)", ... A circular value or a BigInt throws the TypeError of `JSON.stringify`.
  */
 export function redactarEstructura(v: unknown): unknown {
   const r = redactor();
+  // Same sources as the redactor: every env token and every cached token.
+  const numericos = new Set<string>();
+  for (const token of [...config.envTokens.values(), ...[...cache.values()].map((c) => c.token)]) {
+    if (/^[0-9]{16,}$/.test(token)) numericos.add(token);
+  }
   const recorrer = (x: unknown): unknown => {
     if (typeof x === "string") return r(x);
+    if (typeof x === "number") return numericos.has(String(x)) ? "***" : x;
     if (x === null || typeof x !== "object") return x;
     if (Array.isArray(x)) return x.map(recorrer);
     const usadas = new Set<string>();

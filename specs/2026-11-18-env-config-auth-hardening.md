@@ -337,8 +337,9 @@ paths where a known token can reach the client or the audit log.
 Redaction:
 
 - Known secrets are every env token and every cached GSM or MySQL token. For each, the redactor
-  matches the literal value, its `encodeURIComponent` form, and its JSON-escaped form
-  (`JSON.stringify(token).slice(1, -1)`). `redactar()` finds all matches in one pass over the
+  matches the literal value, its `encodeURIComponent` form, that form with the hex digits of its
+  `%XX` escapes in lowercase (the token's own characters keep their case), and its JSON-escaped
+  form (`JSON.stringify(token).slice(1, -1)`). `redactar()` finds all matches in one pass over the
   original text, longest first, so a token that contains or is a prefix of another leaves no
   fragment; the `token=` pattern is applied after the known secrets and may also rewrite ordinary
   data that contains `token=` (over-redaction is the intended direction). The pattern is built once
@@ -347,11 +348,14 @@ Redaction:
 - Poster error texts (`src/poster.ts`) are redacted before they are clipped to their length limit.
   When a reply looks like JSON but does not parse, the error is a fixed text with the HTTP status
   and the redacted, then clipped, body excerpt; the parser's own message is never used.
-- A write rejected by Poster without a usable `error` field returns a redacted, clipped diagnostic
-  of the reply, never the raw reply.
+- A write reply with no `error` (or `error: 0`) and no result is an unknown outcome (see "Write
+  outcome and audit"); the diagnostic of the reply in its message is redacted and clipped, never
+  the raw reply.
 - Tool results sent to the MCP client are redacted structurally: the value is normalized with one
-  JSON round trip, every string and every object key is redacted, numbers, booleans and `null` are
-  never changed, and the result is serialized once, so the text is always valid JSON. This covers
+  JSON round trip, every string and every object key is redacted, booleans and `null` are never
+  changed, a number becomes the string `"***"` only when `String(n)` equals a known token made only
+  of digits and at least 16 characters long (every other number is unchanged), and the result is
+  serialized once, so the text is always valid JSON. This covers
   successful read results and applied-write replies. `poster_get` redacts its text before it
   truncates it. Tool error messages are redacted as text.
 - Audit: `auditar` redacts every string value and every object key of the event with the same
@@ -371,9 +375,11 @@ Write outcome and audit:
   as "not found".
 - Unknown outcome: when the HTTP attempt of the write fails after it has started (network or DNS
   error, timeout, a reply that is not JSON, or a reply with HTTP status 500 or higher whatever its
-  body), the request may have reached Poster. `src/poster.ts` marks only that case with a
-  dedicated exported error class; its message carries the HTTP status when there is one and the
-  redacted reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
+  body), the request may have reached Poster. A write reply with no `error` (or `error: 0`) and
+  neither a `response` nor `success: 1` is an unknown outcome too: nothing in it shows that the
+  write was rejected. A write reply with an `error` other than 0 stays `rechazado`. Both unknown
+  cases use a dedicated error class exported by `src/poster.ts`; its message carries the HTTP
+  status when there is one and, when it can be built, the redacted reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
   and the tool fails with a message that says the write may have been attempted and must be
   checked with a read before any retry. Every failure before the attempt starts (validation,
   permission, plan construction, token lookup, method check) stays `rechazado`; when a plan
@@ -385,6 +391,18 @@ Write outcome and audit:
 - `auditar` never throws and returns nothing. If an event cannot be serialized to a JSON object,
   it logs a minimal valid line with `ts`, `herramienta`, `cuenta`, `modo` and an `error` saying
   the audit entry is incomplete. `recent_audit` skips lines that do not parse.
+
+Known limitations:
+
+- The transaction amount check uses a 0.5-peso tolerance and does not validate sub-cent amounts.
+- A transfer's read-back checks only the source account and the amount.
+- A crash that leaves a partial last line in the audit file makes the next appended entry
+  unreadable.
+- A Secret Manager or MySQL token rotated while a request is in flight is redacted only in its
+  new form.
+- A digit-only secret placed in `POSTER_ACCOUNTS` by mistake appears in the derived variable name
+  of the startup error.
+- Result formatting of an extremely deeply nested reply can fail after a write was applied.
 
 ### Unit 4 acceptance
 
@@ -400,15 +418,16 @@ With a faked Poster API, no network:
 - A synthetic token inside a nested payload string is redacted in both lines.
 - An event that cannot be serialized (a circular value) produces the minimal line and no throw.
 - Redaction, each with a synthetic known token: a token that is a prefix of another known token
-  and a token that contains `token=` leave no fragment; the percent-encoded and JSON-escaped forms
-  are stripped; a cached GSM token containing `"` or `\` echoed in a Poster error is absent from
+  and a token that contains `token=` leave no fragment; the percent-encoded form (with uppercase or
+  lowercase hex digits) and the JSON-escaped form are stripped; a cached GSM token containing `"` or `\` echoed in a Poster error is absent from
   the client error, stdout, the JSONL line and `recent_audit`; a token straddling the clip
-  boundary of a Poster error leaves no prefix; a rejected write reply `{ success: 0, detail:
-  <token> }` reaches the client without the token; a successful `poster_get` reply and an
+  boundary of a Poster error leaves no prefix; a write reply `{ success: 0, detail: <token> }`
+  with no `error` reaches the client as an unknown outcome without the token; a successful `poster_get` reply and an
   applied-write reply containing the token reach the client without it; an upstream object key
   containing the token is absent from both audit lines.
-- A digit-only synthetic token that equals a number in a read result: the client text parses as
-  JSON and the number is unchanged. A token inside a string that itself holds JSON is absent from
+- A 16-digit synthetic token that equals a number in a read result: the client text parses as
+  JSON, the number becomes `"***"` and other numbers are unchanged; a digit-only token shorter
+  than 16 characters leaves an equal number unchanged. A token inside a string that itself holds JSON is absent from
   the client text. Two keys that redact to the same text are both present, in the client text and
   in the audit line. A token placed just before the 60 000-character limit of `poster_get` leaves
   no prefix.
@@ -502,10 +521,13 @@ changes.
   writing to Poster".
 - Tokens: every Poster request carries the token in the query string (Poster API design).
   Redaction covers the token values the server knows (all environment tokens from startup;
-  GSM/MySQL tokens once loaded) in their literal, URL-encoded and JSON-escaped forms. The docs
+  GSM/MySQL tokens once loaded) in their literal, URL-encoded (uppercase or lowercase hex escapes)
+  and JSON-escaped forms, and a number equal to a known token made only of digits and at least 16
+  characters long. The docs
   describe this instead of "never exposed".
-- Deletes: `delete_old_dish` deletes a dish through `menu.removeDish`, only for a hidden dish whose
-  name ends in "(old)". The docs no longer say there is no delete; tool lists include it and
+- Deletes: `delete_old_dish` deletes a dish through `menu.removeDish`, only for a dish whose name
+  ends in "(old)" and whose spots are all explicitly hidden (`visible` 0); a dish with no spots,
+  or with a spot whose visibility is missing or unknown, is refused. The docs no longer say there is no delete; tool lists include it and
   `update_dish_recipe`.
 - Transaction amounts: `create_transaction` sends the amount in pesos. Its description, the
   `monto` parameter text, the header comment in `src/tools/escritura.ts` and `README.es.md` say
@@ -524,7 +546,8 @@ changes.
 
 ## Exclusions and known limitations
 
-- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish`), `poster_get`
+- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish` beyond its
+  hidden-spot check), `poster_get`
   method scope, refresh-token lifetime and revocation, DCR loopback redirects. These are
   known weaknesses outside this change.
 - `/health`: no change to its fields or disclosure policy beyond the service name value, the

@@ -242,6 +242,24 @@ describe("delete_old_dish", () => {
     await expect(W.borrarPlatilloOld(ctx(b.api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/sigue visible/);
     expect(post).not.toHaveBeenCalled();
   });
+  const SIN_OCULTO_EXPLICITO: Array<[string, unknown]> = [
+    ["sin spots", undefined],
+    ["spots vacío", []],
+    ["spots que no es lista", { "1": { visible: "0" } }],
+    ["spots como texto", "0"],
+    ["spot sin visible", [{ spot_id: "1" }]],
+    ["un spot oculto y otro sin visible", [{ spot_id: "1", visible: "0" }, { spot_id: "2" }]],
+    ["visible con valor desconocido", [{ spot_id: "1", visible: "2" }]],
+    ["spot nulo", [null]],
+  ];
+  it.each(SIN_OCULTO_EXPLICITO)("rechaza borrar si no todos los spots están marcados como ocultos (%s), sin escribir", async (_caso, spots) => {
+    const p: Obj = { ...old(), spots };
+    if (spots === undefined) delete p.spots;
+    const { api, post } = apiConEstado({ ...base(), "menu.getProducts": [p] });
+    await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/visibilidad ausente o desconocida/);
+    await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892 })).rejects.toThrow(/visibilidad ausente o desconocida/);
+    expect(post).not.toHaveBeenCalled();
+  });
   it("dry-run no escribe; confirm manda removeDish y verifica", async () => {
     const { api, post, db } = apiConEstado({ ...base(), "menu.getProducts": [old()] });
     const d: any = await W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892 });
