@@ -825,9 +825,9 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
 //   type 1 = ingreso → entrada a una cuenta  (account_to   / amount_to)
 //   type 2 = transferencia → account_from/amount_from (origen) → account_to/amount_to (destino)
 //   category_id: obligatorio en gasto e ingreso; en transferencia no aplica.
-//   Montos SE ENVÍAN en centavos (como el resto de la API Póster) y se LEEN en centavos.
-//   ⚠ No está confirmado si al escribir Póster espera pesos o centavos: tras aplicar se relee
-//   finance.getTransactions del día y, si el monto quedó 100× desviado, se reporta claramente.
+//   Amounts are sent in pesos (create_supply sends centavos) and read back from finance.getTransactions in centavos.
+//   After applying, the day's transactions are read back; if the amount is off by 100x,
+//   the result flags it with alerta_100x.
 // ════════════════════════════════════════════════════════════════════════════
 const TIPO_TX = { gasto: 0, ingreso: 1, transferencia: 2 } as const;
 export type TipoTransaccion = keyof typeof TIPO_TX;

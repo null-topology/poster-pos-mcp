@@ -487,6 +487,41 @@ instructions and result fields stay as they are.
   lines.
 - The suite, `tsc` and the wider check are clean.
 
+## Unit 6: documentation accuracy
+
+Text-only. Statements in `README.md`, `README.es.md`, `DEPLOY_CLOUD_RUN.md` and the
+transaction-amount texts in `src/` are brought in line with what the code does. No behaviour
+changes.
+
+- Safety rules: the server enforces the account allow-list, the default write set, dry-run as the
+  default and the per-write checks. Applying a write (`confirm: true`) and writing outside the
+  default set (`permitir_otra_cuenta: true`) are tool arguments the model sets, so the human check
+  is the client's tool approval. The docs say so instead of claiming the rules do not depend on
+  the model.
+- Dry-run: a dry-run reads from Poster to build the diff and does not write; the docs say "without
+  writing to Poster".
+- Tokens: every Poster request carries the token in the query string (Poster API design).
+  Redaction covers the token values the server knows (all environment tokens from startup;
+  GSM/MySQL tokens once loaded) in their literal, URL-encoded and JSON-escaped forms. The docs
+  describe this instead of "never exposed".
+- Deletes: `delete_old_dish` deletes a dish through `menu.removeDish`, only for a hidden dish whose
+  name ends in "(old)". The docs no longer say there is no delete; tool lists include it and
+  `update_dish_recipe`.
+- Transaction amounts: `create_transaction` sends the amount in pesos. Its description, the
+  `monto` parameter text, the header comment in `src/tools/escritura.ts` and `README.es.md` say
+  pesos. Other unit statements are checked against the code and corrected only where the code
+  contradicts them.
+- `poster_get` output is cut at 60 000 characters, not bytes.
+- `DEPLOY_CLOUD_RUN.md`: each refresh issues a new refresh token, so a connection has no absolute
+  end; rotating the OAuth signing key revokes OAuth-issued tokens only, and the static bearer
+  (`MCP_BEARER_TOKEN`) is rotated separately.
+
+### Unit 6 acceptance
+
+- Each statement above is true of the code, with the line it rests on.
+- `src/` changes are limited to the transaction-amount description strings and comments.
+- The suite, `tsc` and the wider check are clean.
+
 ## Exclusions and known limitations
 
 - Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish`), `poster_get`

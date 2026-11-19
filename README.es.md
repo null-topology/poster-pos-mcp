@@ -10,15 +10,17 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 
 ## Reglas que el servidor hace cumplir
 
+Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defecto (`permitir_otra_cuenta: true`) son argumentos de la herramienta que pone el modelo; el control humano antes de escribir es la aprobación de la llamada en el cliente.
+
 | Regla | Cómo |
 |---|---|
 | Solo las cuentas de la lista blanca | `POSTER_ACCOUNTS` (cargada en `CUENTAS`, `src/config.ts`; por defecto `cafe-01` a `cafe-10`); cualquier otra se rechaza, también en lectura. Una excepción: `recent_audit` devuelve el log de auditoría local de esta instancia tal como se escribió, así que puede mostrar entradas de cuentas que ya se quitaron de la lista |
-| Escritura limitada a un conjunto de cuentas | Solo las cuentas de `WRITE_DEFAULT_ACCOUNTS` (por defecto `cafe-04` mientras `POSTER_ACCOUNTS` no esté definida, si no vacía; puede dejarse vacía) se escriben por defecto. Otra cuenta exige `permitir_otra_cuenta: true` **en esa llamada** (y la autorización de `OWNER_NAME`) |
-| Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin tocar Póster |
+| Escritura limitada a un conjunto de cuentas | Solo las cuentas de `WRITE_DEFAULT_ACCOUNTS` (por defecto `cafe-04` mientras `POSTER_ACCOUNTS` no esté definida, si no vacía; puede dejarse vacía) se escriben por defecto. Otra cuenta exige `permitir_otra_cuenta: true` **en esa llamada** |
+| Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin escribir en Póster (puede leer de Póster para armar el diff) |
 | Aplicar = `confirm: true` | escribe una sola vez (sin reintentos, para no duplicar) y **lee de vuelta** para verificar |
 | Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`). Una escritura cuyo intento HTTP falló una vez iniciado (error de red, timeout, respuesta que no es JSON o estado HTTP 5xx) queda como `desconocido`: puede haberse aplicado, así que se verifica con una lectura antes de reintentar. Una escritura aplicada que no se pudo releer queda como `aplicado`, con `verificacion.ok: false` y un aviso de no repetirla |
-| Tokens nunca visibles | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`; se redactan de errores y auditoría; no hay herramienta que los devuelva |
-| Fuera de carta = ocultar | `update_dish` con `visible: false`; no existe herramienta de borrado |
+| Redacción de tokens | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`, y viajan en la query string de cada petición a Póster. Los tokens conocidos (los de entorno desde el arranque, los de GSM o MySQL una vez cargados) se redactan, literales, codificados en URL o escapados en JSON, de resultados, errores y auditoría, igual que cualquier valor `token=`; no hay herramienta que los devuelva |
+| Fuera de carta = ocultar | `update_dish` con `visible: false` o `hide_dish`. El único borrado, `delete_old_dish` (`menu.removeDish`), solo quita un platillo oculto en todos los spots cuyo nombre termina en "(old)" |
 
 ## Herramientas
 
@@ -32,11 +34,13 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 `create_supply`, `update_dish` (updateDish), `update_category` (updateCategory),
 `update_prepack` (updatePrepack), `create_category` (createCategory), `create_prepack` (createPrepack),
 `create_dish` (createDish con receta y grupos; relee y verifica), `hide_dish` (getProduct + updateDish COMPLETO con receta, visible 0 y sufijo " (old)"),
+`update_dish_recipe` (getProduct + updateDish COMPLETO que reemplaza receta y grupos; conserva nombre, categoría, precio y visibilidad; relee y verifica),
+`delete_old_dish` (menu.removeDish solo para un platillo oculto en todos los spots cuyo nombre termina en "(old)"; relee y verifica),
 `create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, al revés que el resto de la API—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories` y tras aplicar relee `finance.getTransactions` avisando si el monto quedó 100× desviado),
 `create_supply` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
 `assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que el total y los renglones no cambiaron).
 
-**Solo panel web**: editar la receta de un platillo existente (update_dish rechaza platillos con receta) y permisos de puestos.
+**Solo panel web**: permisos de puestos. La receta de un platillo existente se cambia con `update_dish_recipe` (update_dish rechaza platillos con receta).
 
 ## Contratos de Póster (aprendidos en la migración de la 47)
 
@@ -74,10 +78,10 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 
 **Finanzas** (`create_transaction`)
 - `finance.createTransactions`: `type` 0 gasto · 1 ingreso · 2 transferencia. Gasto usa `account_from`/`amount_from`;
-  ingreso `account_to`/`amount_to`; transferencia ambos pares (`account_from`→`account_to`). `category_id` solo en gasto/ingreso.
-- ⚠ **Unidad sin confirmar al escribir**: al LEER (`finance.getTransactions`) los montos vienen en **centavos**; no está
-  verificado si al escribir Póster espera pesos o centavos. El servidor **envía centavos** (como el resto de la API) y tras
-  aplicar relee la transacción del día; si el monto quedó **100× desviado**, lo marca con `alerta_100x` y pide no reintentar.
+  ingreso `account_to`/`amount_to`; transferencia ambos pares (`account_from`→`account_to`). La categoría va como `category` (el `category_id` de la herramienta), solo en gasto/ingreso.
+- ⚠ **Unidad del monto**: el servidor **envía pesos** (a diferencia de `create_supply`, que envía centavos); al LEER (`finance.getTransactions`)
+  trata los montos como **centavos**. Tras aplicar relee la transacción del día; si el monto quedó **100× desviado**, lo
+  marca con `alerta_100x` y pide no reintentar.
 - `account_id`/`account_destino_id` = cuentas de `finance.getAccounts`; `category_id` = `finance.getCategories`. `date` = `YYYY-MM-DD HH:MM:SS` (hora de la zona `TIMEZONE`).
 
 **Compras y su pago**

@@ -6,22 +6,22 @@ I built it to run my own 10-location coffee brand from a chat window: check menu
 
 ## Why it's interesting
 
-Letting an LLM write to a production POS is risky. The server enforces the safety rules itself, so they don't depend on the model behaving:
+Letting an LLM write to a production POS is risky. Applying a write (`confirm: true`) and writing outside the default accounts (`permitir_otra_cuenta: true`) are tool arguments the model sets, so the human check before a write is the client's approval of the tool call. The server enforces these rules itself:
 
 | Rule | How it's enforced |
 |---|---|
 | Account allow-list | Only accounts in `POSTER_ACCOUNTS` (loaded into `CUENTAS` in `src/config.ts`; default `cafe-01` to `cafe-10`) can be touched, including for reads. One exception: `recent_audit` returns this instance's local audit log as written, so it can show entries for accounts since removed from the list |
 | Writes limited to a permission set | Only the accounts in `WRITE_DEFAULT_ACCOUNTS` (default `cafe-04` while `POSTER_ACCOUNTS` is unset, empty otherwise; may be set empty) are writable by default. Any other account needs an explicit `permitir_otra_cuenta: true` on that call |
-| **Dry-run by default** | Every write with `confirm: false` returns the diff, warnings and the exact payload without touching Poster |
+| **Dry-run by default** | Every write with `confirm: false` returns the diff, warnings and the exact payload without writing to Poster (it may read from Poster to build the diff) |
 | Apply once, then verify | `confirm: true` writes once (no retries, to avoid duplicates) and **reads back** to verify |
 | Audit log | Every dry-run, apply and rejection is logged with who, when, account, method, payload (token-redacted) and result. A write whose HTTP attempt failed once it had started (network error, timeout, a reply that is not JSON, or an HTTP 5xx status) is logged as `desconocido`: it may have been applied, so check with a read before retrying. A write applied but not verifiable by its read-back stays `aplicado`, with `verificacion.ok: false` and a notice not to repeat it |
-| Secrets never exposed | Tokens come from Google Secret Manager, a local MySQL table or `POSTER_TOKEN_<ACCOUNT>` environment variables (`TOKEN_SOURCE`), are redacted from errors and logs, and no tool returns them |
-| No destructive deletes | Items off the menu are **hidden**, not deleted |
+| Token redaction | Tokens come from Google Secret Manager, a local MySQL table or `POSTER_TOKEN_<ACCOUNT>` environment variables (`TOKEN_SOURCE`) and travel in the query string of every Poster request. Known tokens (environment tokens from startup, Secret Manager and MySQL tokens once loaded) are redacted, literal, URL-encoded or JSON-escaped, from tool results, errors and the audit log, as is any `token=` value; no tool returns them |
+| Hide first, narrow delete | Items off the menu are **hidden** (`hide_dish`). The one delete, `delete_old_dish` (`menu.removeDish`), only removes a dish that is hidden in every spot and whose name ends in "(old)" |
 
 ## Tools
 
 - **Read:** accounts, menu snapshot, product detail, ingredients, prepared items, customer groups, promotions, employees, payment methods, settings, purchases, balances, base catalogs, generic `get*` passthrough, recent audit.
-- **Write (dry-run first):** customer groups, ingredients, purchases, dish and category updates, recipes, prepared items, categories, transactions, purchase payments, hide dish.
+- **Write (dry-run first):** customer groups, ingredients, purchases, new dishes, dish and category updates, dish recipes, prepared items, categories, transactions, purchase payments, hide dish, delete an old hidden dish.
 
 ## Stack
 

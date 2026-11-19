@@ -149,7 +149,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
 
   s.registerTool("poster_get", {
     title: "Lectura genérica",
-    description: "Llama cualquier método de LECTURA de Póster (<modulo>.get*) con parámetros simples. Respuesta cruda (truncada a 60 KB).",
+    description: "Llama cualquier método de LECTURA de Póster (<modulo>.get*) con parámetros simples. Respuesta cruda (JSON truncado a 60 000 caracteres).",
     inputSchema: { cuenta, metodo: z.string().regex(L.METODO_LECTURA), params: z.record(z.string(), z.union([z.string(), z.number()])).optional() },
     annotations: LECTURA,
   }, envolver((a) => L.posterGet(api, a)));
@@ -332,13 +332,13 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     title: "Registrar transacción en Finanzas",
     description:
       "finance.createTransactions: registra un gasto (type 0), ingreso (type 1) o transferencia (type 2). " +
-      "Monto en PESOS (se envía en centavos). El account_id es la cuenta financiera (ver finance.getAccounts con poster_get); " +
+      "Monto en PESOS (se envía en pesos, no en centavos). El account_id es la cuenta financiera (ver finance.getAccounts con poster_get); " +
       "category_id es obligatorio en gasto e ingreso (finance.getCategories) y no aplica a transferencias, que usan account_destino_id. " +
       "Valida cuenta y categoría; tras aplicar relee finance.getTransactions del día y verifica monto, cuenta y categoría, avisando si el monto quedó 100× desviado. Dry-run por defecto.",
     inputSchema: {
       cuenta: cuentaEscritura,
       tipo: z.enum(["gasto", "ingreso", "transferencia"]).describe("gasto = salida, ingreso = entrada, transferencia = entre cuentas"),
-      monto: z.number().positive().describe("Monto en PESOS (se envía en centavos)"),
+      monto: z.number().positive().describe("Monto en PESOS (se envía en pesos, no en centavos)"),
       account_id: z.number().int().describe("Cuenta financiera: origen del gasto/transferencia o destino del ingreso (finance.getAccounts)"),
       account_destino_id: z.number().int().optional().describe("Solo transferencias: cuenta financiera destino"),
       category_id: z.number().int().optional().describe("Categoría financiera (finance.getCategories). Obligatoria en gasto e ingreso; se ignora en transferencias"),
