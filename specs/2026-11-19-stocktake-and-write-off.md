@@ -119,6 +119,7 @@ A write tool in `src/tools/escritura.ts` built like `create_supply`, running onl
 - A local `fecha` that does not exist or is ambiguous in the configured time zone (a daylight-saving change) is not detected; it is sent as given.
 - `count_sheet` accepts a deleted storage and does not leave out deleted ingredients.
 - When `storage.getWastes` fails, `create_write_off` stops before sending: the write needs the duplicate check.
+- The read-back pairs each ingredient line with its own type-10 element. The docs do not show whether Poster groups several ingredients in one element; if it does, the later ingredient lines read back as missing and the result says the write was applied but did not verify. A write-off with two different ingredient lines on a live account settles this; a single-line write-off reads back the same either way.
 - The tests check that the tool hands the write-off to the transport without the multipart option; no test checks the HTTP encoding the transport then uses for `storage.createWriteOff`. No test checks that both READMEs keep the stocktake section.
 
 ## Exclusions
