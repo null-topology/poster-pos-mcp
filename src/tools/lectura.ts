@@ -288,6 +288,182 @@ export async function catalogosBase(api: PosterApi, a: { cuenta: string }) {
   };
 }
 
+// ── Inventarios (conteos) ───────────────────────────────────────────────────
+// Póster no permite crear, llenar ni realizar un inventario por API: se hace en Póster y aquí solo se lee.
+
+/** Number from a Poster value; absent, blank, `''` (two quotes) or not numeric reads as null, never as 0. */
+export function numeroONulo(v: unknown): number | null {
+  if (v === null || v === undefined || typeof v === "boolean") return null;
+  const s = String(v).trim();
+  if (s === "" || s === "''") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Poster's zero date (`0000-00-00 …`) or an empty value: the date is not set. */
+const sinFecha = (v: unknown) => {
+  const s = String(v ?? "").trim();
+  return s === "" || s.startsWith("0000-00-00");
+};
+
+/** Rows of a group that Poster sends either as an array or as an object keyed by id. */
+export const filasDe = (g: unknown): Obj[] => (Array.isArray(g) ? g : g !== null && typeof g === "object" ? Object.values(g as Obj) : []);
+
+/** Rounds a money total to 6 decimals: enough to drop float noise, not enough to lose a centavo fraction. */
+const redondear = (n: number) => Math.round(n * 1e6) / 1e6;
+
+/** The account's storages (every row of storage.getStorages) and the one with `storage_id`, which must exist. */
+async function almacenDe(api: PosterApi, cuenta: string, storageId: number) {
+  const lista = (await api.get<Obj[]>(cuenta, "storage.getStorages")) ?? [];
+  const almacen = lista.find((x) => num(x.storage_id) === storageId);
+  if (!almacen) {
+    const disponibles = lista.map((x) => `${x.storage_id}=${String(x.storage_name ?? "").trim()}`).join(", ") || "(ninguno)";
+    throw new Error(`Almacén ${storageId} no existe en ${cuenta}. Disponibles: ${disponibles}`);
+  }
+  return { lista, almacen };
+}
+
+export async function inventarios(api: PosterApi, a: { cuenta: string; storage_id?: number; desde?: string; hasta?: string }) {
+  let almacenes: Obj[];
+  if (a.storage_id !== undefined) almacenes = [(await almacenDe(api, a.cuenta, a.storage_id)).almacen];
+  else almacenes = (await api.get<Obj[]>(a.cuenta, "storage.getStorages")) ?? [];
+  // storage.getStorageInventories needs storage_id: one call per storage, results merged.
+  const porAlmacen = await Promise.all(
+    almacenes.map(async (s) => ({ s, filas: (await api.get<Obj[]>(a.cuenta, "storage.getStorageInventories", { storage_id: num(s.storage_id) })) ?? [] })),
+  );
+  // The docs spell some fields data_*; date_* is read first.
+  const fecha = (x: Obj, k: string) => x[`date_${k}`] ?? x[`data_${k}`];
+  // A zero or empty date reads as null.
+  const fechaONula = (v: unknown) => (sinFecha(v) ? null : v);
+  // The date a stocktake is filtered and sorted by: fin, or inicio when fin is not set.
+  const clave = (x: { inicio: unknown; fin: unknown }) => {
+    const v = x.fin ?? x.inicio;
+    return v === null || v === undefined ? null : String(v);
+  };
+  const lista = porAlmacen
+    .flatMap(({ s, filas }) =>
+      filas.map((x) => {
+        const inventario = fecha(x, "inventory");
+        return {
+          inventario_id: num(x.inventory_id),
+          storage_id: num(x.storage_id ?? s.storage_id),
+          almacen: String(s.storage_name ?? "").trim(),
+          inicio: fechaONula(fecha(x, "start")),
+          fin: fechaONula(fecha(x, "end")),
+          fecha_inventario: sinFecha(inventario) ? null : inventario,
+          retroactiva: !sinFecha(fecha(x, "set")),
+          realizada: num(x.inventory_status) === 1,
+          costo_total: pesos(x.sum), // kopecks
+          ...(x.sum_netto === undefined || x.sum_netto === null ? {} : { costo_total_neto: pesos(x.sum_netto) }),
+        };
+      }),
+    )
+    .filter((x) => {
+      const k = clave(x);
+      // A stocktake with neither date cannot be placed in a range: it is kept only when no range is given.
+      if (k === null) return !a.desde && !a.hasta;
+      const dia = k.slice(0, 10);
+      return (!a.desde || dia >= a.desde) && (!a.hasta || dia <= a.hasta);
+    })
+    .sort((x, y) => {
+      // Newest first by the full date-time; a stocktake with neither date goes last; then by id, newest first.
+      const kx = clave(x);
+      const ky = clave(y);
+      if (kx !== ky) {
+        if (kx === null) return 1;
+        if (ky === null) return -1;
+        return kx < ky ? 1 : -1;
+      }
+      return y.inventario_id - x.inventario_id;
+    });
+  return { cuenta: a.cuenta, storage_id: a.storage_id ?? "todos", total: lista.length, inventarios: lista };
+}
+
+export async function inventarioResultado(
+  api: PosterApi,
+  a: { cuenta: string; inventario_id: number; solo_diferencias?: boolean; limite?: number },
+) {
+  const d = await api.get<Obj>(a.cuenta, "storage.getInventoryIngredients", { inventory_id: a.inventario_id });
+  const presente = (k: string) => d[k] !== undefined && d[k] !== null;
+  if (!d || typeof d !== "object" || Array.isArray(d) || !["ingredients", "manufactures", "prepacks"].some(presente)) {
+    throw new Error(`Inventario ${a.inventario_id} no existe en ${a.cuenta} o Póster no devolvió renglones`);
+  }
+  const soloDiferencias = a.solo_diferencias ?? true;
+  const limite = a.limite ?? 200;
+  // Money of this method comes in currency units, not kopecks.
+  const renglon = (x: Obj) => ({
+    id: num(x.item_id),
+    nombre: String(x.item ?? "").trim(),
+    unidad: x.unit ?? null,
+    calculado: numeroONulo(x.estimatedrest),
+    real: numeroONulo(x.factrest),
+    diferencia: numeroONulo(x.difference),
+    diferencia_costo: numeroONulo(x.diffcurrency),
+    costo_unitario: numeroONulo(x.primecost),
+  });
+  type Renglon = ReturnType<typeof renglon>;
+  const insumos = filasDe(d.ingredients).map(renglon);
+  const producciones = filasDe(d.manufactures).map(renglon);
+  const prepacks = filasDe(d.prepacks).map((x) => ({
+    id: num(x.product_id),
+    nombre: String(x.product_name ?? "").trim(),
+    tipo: num(x.type) === 1 ? "precocinado" : num(x.type) === 2 ? "platillo" : null,
+    real: numeroONulo(x.factrest),
+  }));
+
+  // Totals over every ingredient and manufacture row, before the filter and the limit.
+  let faltante = 0;
+  let sobrante = 0;
+  for (const r of [...insumos, ...producciones]) {
+    if (r.diferencia_costo === null) continue;
+    if (r.diferencia_costo < 0) faltante += r.diferencia_costo;
+    else sobrante += r.diferencia_costo;
+  }
+  const lineasContadas = [...insumos, ...producciones].filter((r) => r.real !== null).length;
+  // The stocktake may not be conducted yet: nothing counted among ingredients and manufactures, and no prepack counted.
+  const sinConteo = lineasContadas === 0 && !prepacks.some((r) => r.real !== null && r.real !== 0);
+
+  const noCero = (n: number | null) => n !== null && n !== 0;
+  const porCosto = (x: Renglon, y: Renglon) => {
+    if (x.diferencia_costo === null) return y.diferencia_costo === null ? 0 : 1;
+    if (y.diferencia_costo === null) return -1;
+    return Math.abs(y.diferencia_costo) - Math.abs(x.diferencia_costo);
+  };
+  const grupo = <T>(filas: T[]) => ({ total: filas.length, truncado: filas.length > limite, renglones: filas.slice(0, limite) });
+  const conDiferencia = (filas: Renglon[]) => (soloDiferencias ? filas.filter((r) => noCero(r.diferencia)) : filas).sort(porCosto);
+  return {
+    cuenta: a.cuenta,
+    inventario_id: a.inventario_id,
+    solo_diferencias: soloDiferencias,
+    totales: {
+      faltante_costo: redondear(faltante),
+      sobrante_costo: redondear(sobrante),
+      neto: redondear(faltante + sobrante),
+      lineas_contadas: lineasContadas,
+    },
+    ...(sinConteo ? { aviso: "El inventario no tiene ningún insumo ni producción contado: puede que todavía no se haya realizado en Póster." } : {}),
+    insumos: grupo(conDiferencia(insumos)),
+    producciones: grupo(conDiferencia(producciones)),
+    platillos_y_precocinados: grupo(soloDiferencias ? prepacks.filter((r) => noCero(r.real)) : prepacks),
+  };
+}
+
+export async function hojaConteo(api: PosterApi, a: { cuenta: string; storage_id: number; incluir_ocultos?: boolean }) {
+  const { almacen } = await almacenDe(api, a.cuenta, a.storage_id);
+  const l = (await api.get<Obj[]>(a.cuenta, "storage.getStorageLeftovers", { storage_id: a.storage_id, zero_leftovers: "true" })) ?? [];
+  // A blind count sheet: no balance, cost or any other stock figure.
+  const renglones = l
+    .filter((x) => a.incluir_ocultos === true || String(x.hidden) !== "1")
+    .map((x) => ({
+      id: num(x.ingredient_id),
+      nombre: String(x.ingredient_name ?? "").trim(),
+      unidad: x.ingredient_unit ?? null,
+      tipo: num(x.ingredients_type) === 1 ? "insumo" : num(x.ingredients_type) === 2 ? "producto" : null,
+    }))
+    .sort((x, y) => x.nombre.localeCompare(y.nombre, "es"));
+  return { cuenta: a.cuenta, storage_id: a.storage_id, almacen: String(almacen.storage_name ?? "").trim(), total: renglones.length, renglones };
+}
+
 /** Escape de solo lectura: cualquier método `<modulo>.get*` con parámetros simples. */
 export const METODO_LECTURA = /^[a-zA-Z]+\.get[A-Za-z0-9]*$/;
 export async function posterGet(api: PosterApi, a: { cuenta: string; metodo: string; params?: Record<string, string | number> }) {

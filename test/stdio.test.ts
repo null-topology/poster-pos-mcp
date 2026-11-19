@@ -96,7 +96,7 @@ describe("stdio server process", () => {
     try {
       await cliente.connect(transporte);
       const { tools } = await cliente.listTools();
-      expect(tools).toHaveLength(31);
+      expect(tools).toHaveLength(35);
       expect(tools.map((t) => t.name)).toContain("list_accounts");
       const r = await cliente.callTool({ name: "list_accounts", arguments: {} });
       const texto = (r.content as { type: string; text: string }[]).map((c) => c.text).join("");

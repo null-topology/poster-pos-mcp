@@ -10,6 +10,7 @@ import { config, verificarEscritura } from "../config.js";
 import { auditar } from "../audit.js";
 import { redactar } from "../tokens.js";
 import { centavos, diff, fechaPoster, hoyMx, norm, num, pesos, unidadReceta, type Cambio } from "../util.js";
+import { filasDe, numeroONulo } from "./lectura.js";
 
 type Obj = Record<string, any>;
 
@@ -273,6 +274,303 @@ export async function crearCompra(
           ok,
           detalle: { supply_id: num(r.response), total_esperado: total, total_leido_pesos: real, ...(ok ? {} : { alerta: "El total leído no coincide: revisa unidades (centavos/pesos) antes de seguir y corrige la compra en el panel." }) },
         };
+      },
+    };
+  });
+}
+
+// ── Mermas (storage.createWriteOff) ─────────────────────────────────────────
+/** Line type as storage.createWriteOff takes it. */
+const TIPO_MERMA = { producto: 1, platillo: 2, precocinado: 3, insumo: 4, modificador: 5 } as const;
+type TipoMerma = keyof typeof TIPO_MERMA;
+/** Element type of the same line as storage.getWaste returns it. */
+const TIPO_LEIDO: Record<TipoMerma, number> = { producto: 1, platillo: 2, precocinado: 3, insumo: 10, modificador: 8 };
+const FECHA_HORA = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;
+/** Read-back tolerance of a write-off quantity; the epsilon keeps a difference of exactly the tolerance within it. */
+const TOLERANCIA_MERMA = 0.0005;
+const EPSILON_MERMA = 1e-9;
+/** Seconds a write-off date may run ahead of now (clock drift between the caller and this server). */
+const ADELANTO_MERMA_MS = 60_000;
+const NOTA_SIN_CANTIDADES = "No se pudo comparar ninguna cantidad: revisa la merma en Póster.";
+/** Local "YYYY-MM-DD HH:MM:SS" of the instant `ms` (epoch milliseconds) in the configured time zone. */
+const horaLocal = (ms: number) => new Date(ms).toLocaleString("sv-SE", { timeZone: config.timezone }).slice(0, 19);
+const vacio = (v: unknown) => v === undefined || v === null || String(v).trim() === "";
+/** A number that is a positive safe integer. */
+const enteroPositivo = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+/** A Poster id as a positive integer, from a number or a string of digits; anything else is null. */
+const idPositivo = (v: unknown): number | null => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : Number.NaN;
+  return enteroPositivo(n) ? n : null;
+};
+/** "YYYY-MM-DD HH:MM:SS" that is a real calendar date and clock time. */
+function fechaHoraReal(s: string): boolean {
+  const p = FECHA_HORA.exec(s);
+  if (!p) return false;
+  const [anio, mes, dia, hora, minuto, segundo] = p.slice(1).map(Number);
+  const bisiesto = anio % 4 === 0 && (anio % 100 !== 0 || anio % 400 === 0);
+  const dias = [31, bisiesto ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return mes >= 1 && mes <= 12 && dia >= 1 && dia <= dias[mes - 1] && hora <= 23 && minuto <= 59 && segundo <= 59;
+}
+/** The time of a Poster "YYYY-MM-DD HH:MM:SS" value; a value of any other shape has none. */
+const horaDe = (v: unknown) => /^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})/.exec(String(v ?? ""))?.[1] ?? "sin hora";
+/** A value read back: undefined when absent, null when present but not a finite number. */
+function numeroLeido(v: unknown): number | null | undefined {
+  if (vacio(v)) return undefined;
+  if (typeof v !== "number" && typeof v !== "string") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+type RenglonEnviado = { id: number; tipo: TipoMerma; cantidad: number };
+
+/**
+ * Compares the write-off read with storage.getWaste against what was sent. A field the reply does not
+ * carry is listed in `no_expuestos` and does not fail the check by itself; a present value that cannot be
+ * read, and a reply with nothing comparable, do.
+ */
+function verificarMerma(w: unknown, wasteId: number, e: { storage_id: number; fecha: string; razon_id?: number; renglones: RenglonEnviado[] }) {
+  const sinCantidades = e.renglones.length ? { nota: NOTA_SIN_CANTIDADES } : {};
+  if (!w || typeof w !== "object" || Array.isArray(w)) {
+    return {
+      ok: false,
+      detalle: { waste_id: wasteId, fallas: ["storage.getWaste no devolvió la merma"], no_expuestos: [] as string[], cantidades_verificadas: 0, ...sinCantidades },
+    };
+  }
+  const m = w as Obj;
+  const fallas: string[] = [];
+  const noExpuestos = new Set<string>();
+  let comparados = 0;
+  // The id identifies the record; it does not count as compared content.
+  if (vacio(m.waste_id)) noExpuestos.add("waste_id");
+  else if (idPositivo(m.waste_id) !== wasteId) fallas.push(`waste_id leído ${m.waste_id}, devuelto ${wasteId}`);
+  if (vacio(m.storage_id)) noExpuestos.add("storage_id");
+  else {
+    comparados++;
+    if (idPositivo(m.storage_id) !== e.storage_id) fallas.push(`almacén leído ${m.storage_id}, enviado ${e.storage_id}`);
+  }
+  if (vacio(m.date)) noExpuestos.add("date");
+  else {
+    comparados++;
+    const dia = /^\d{4}-\d{2}-\d{2}/.exec(String(m.date))?.[0];
+    if (dia === undefined) fallas.push("fecha con formato no reconocido");
+    else if (dia !== e.fecha.slice(0, 10)) fallas.push(`fecha leída ${dia}, enviada ${e.fecha.slice(0, 10)}`);
+  }
+  if (e.razon_id !== undefined) {
+    if (vacio(m.reason_id)) noExpuestos.add("reason_id");
+    else {
+      comparados++;
+      if (idPositivo(m.reason_id) !== e.razon_id) fallas.push(`razón leída ${m.reason_id}, enviada ${e.razon_id}`);
+    }
+  }
+  const renglones: Obj[] = [];
+  let otraUnidad = false;
+  let cantidades = 0;
+  if (m.elements === undefined || m.elements === null) noExpuestos.add("elements");
+  else {
+    comparados++;
+    const elementos = filasDe(m.elements);
+    if (elementos.length !== e.renglones.length) fallas.push(`Póster muestra ${elementos.length} elemento(s) y se enviaron ${e.renglones.length} renglón(es)`);
+    // A line reads elements of its own read type first, then elements without type; each element serves at most
+    // one line. An ingredient line reads the rows of the element's ingredients[], any other line the element itself.
+    const usados = new Set<Obj>();
+    const filas = (l: RenglonEnviado, x: Obj): Obj[] => (l.tipo === "insumo" ? filasDe(x.ingredients) : [x]);
+    const idDe = (l: RenglonEnviado, f: Obj) => (l.tipo === "insumo" ? f.ingredient_id : f.product_id);
+    const candidatos = (l: RenglonEnviado) => {
+      const libres = elementos.filter((x) => !usados.has(x));
+      return [...libres.filter((x) => !vacio(x.type) && numeroONulo(x.type) === TIPO_LEIDO[l.tipo]), ...libres.filter((x) => vacio(x.type))];
+    };
+    const hallados = new Map<RenglonEnviado, Obj[]>();
+    for (const l of e.renglones) {
+      const elegido = candidatos(l).find((x) => filas(l, x).some((f) => idPositivo(idDe(l, f)) === l.id));
+      if (!elegido) continue;
+      usados.add(elegido);
+      hallados.set(l, filas(l, elegido).filter((f) => idPositivo(idDe(l, f)) === l.id));
+    }
+    for (const l of e.renglones) {
+      const sinLeer = { id: l.id, tipo: l.tipo, enviado: l.cantidad, leido: null };
+      const encontrados = hallados.get(l);
+      if (!encontrados) {
+        // A candidate row without an id could be this line: it is not exposed, and stands for this line only.
+        const sinId = candidatos(l).find((x) => filas(l, x).some((f) => vacio(idDe(l, f))));
+        if (sinId) {
+          usados.add(sinId);
+          noExpuestos.add("renglón sin id");
+        } else fallas.push(`renglón ${l.id} (${l.tipo}) no aparece en la merma`);
+        renglones.push(sinLeer);
+        continue;
+      }
+      // Lines are unique per item, so more than one row of the item is not a quantity to add up.
+      if (encontrados.length > 1) {
+        fallas.push(`renglón ${l.id} (${l.tipo}) aparece ${encontrados.length} veces en la merma`);
+        renglones.push(sinLeer);
+        continue;
+      }
+      const campo = l.tipo === "insumo" ? "weight" : "count";
+      const leido = numeroLeido(encontrados[0][campo]);
+      if (leido === null) {
+        fallas.push(`renglón ${l.id} (${l.tipo}): ${campo} con valor no numérico`);
+        renglones.push(sinLeer);
+        continue;
+      }
+      if (leido === undefined) {
+        noExpuestos.add(`renglón ${l.id}: ${campo}`);
+        renglones.push(sinLeer);
+        continue;
+      }
+      cantidades++;
+      renglones.push({ id: l.id, tipo: l.tipo, enviado: l.cantidad, leido });
+      if (Math.abs(leido - l.cantidad) > TOLERANCIA_MERMA + EPSILON_MERMA) {
+        fallas.push(`renglón ${l.id} (${l.tipo}): cantidad leída ${leido}, enviada ${l.cantidad}`);
+        otraUnidad = true;
+      }
+    }
+  }
+  const total = numeroONulo(m.total_sum);
+  if (total === null) noExpuestos.add("total_sum");
+  if (comparados === 0) fallas.push("La respuesta de storage.getWaste no trae ningún dato comparable");
+  return {
+    ok: fallas.length === 0,
+    detalle: {
+      waste_id: wasteId,
+      fallas,
+      no_expuestos: [...noExpuestos],
+      renglones,
+      cantidades_verificadas: cantidades,
+      ...(cantidades === 0 ? sinCantidades : {}),
+      // total_sum is in kopecks, like the other money of the storage methods.
+      ...(total === null ? {} : { costo_total_leido: total / 100 }),
+      ...(total === 0 ? { alerta_costo: "Póster registró la merma con costo total 0: revisa en Póster el costo de los artículos y la unidad de las cantidades." } : {}),
+      ...(otraUnidad
+        ? { nota_unidad: "Una cantidad no coincide: Póster puede leer weight en otra unidad (por ejemplo gramos en lugar de kg o ml en lugar de l). Revisa la merma en Póster antes de repetirla." }
+        : {}),
+    },
+  };
+}
+
+export async function crearMerma(
+  ctx: Contexto,
+  a: BaseEscritura & {
+    storage_id: number;
+    fecha?: string;
+    razon_id?: number;
+    renglones: Array<{ id: number; tipo?: TipoMerma; cantidad: number; comentario?: string }>;
+  },
+) {
+  return ejecutar(ctx, a, async () => {
+    if (!a.renglones?.length) throw new Error("La merma necesita al menos un renglón");
+    if (!enteroPositivo(a.storage_id)) throw new Error(`storage_id inválido (${a.storage_id}): debe ser un entero mayor a 0.`);
+    if (a.razon_id !== undefined && !enteroPositivo(a.razon_id)) throw new Error(`razon_id inválido (${a.razon_id}): debe ser un entero mayor a 0.`);
+    const repetidos = new Map<string, number>();
+    for (const l of a.renglones) {
+      if (!enteroPositivo(l.id)) throw new Error(`id de renglón inválido (${l.id}): debe ser un entero mayor a 0.`);
+      if (typeof l.cantidad !== "number" || !Number.isFinite(l.cantidad) || l.cantidad <= 0) {
+        throw new Error(`Cantidad inválida en renglón ${l.id}: debe ser un número mayor a 0`);
+      }
+      if (l.tipo === "modificador") {
+        throw new Error(`Renglón ${l.id}: no se registran mermas de tipo modificador porque el servidor no tiene cómo verificar que el modificador exista. Regístrala en Póster.`);
+      }
+      const clave = `${l.tipo ?? "insumo"} ${l.id}`;
+      repetidos.set(clave, (repetidos.get(clave) ?? 0) + 1);
+    }
+    const repetido = [...repetidos].find(([, veces]) => veces > 1);
+    if (repetido) throw new Error(`Renglones repetidos: ${repetido[0]} aparece ${repetido[1]} veces; une las cantidades en un renglón.`);
+    if (a.fecha !== undefined && !fechaHoraReal(a.fecha)) {
+      throw new Error(`Fecha inválida "${a.fecha}": usa una fecha y hora reales en formato YYYY-MM-DD HH:MM:SS (hora de ${config.timezone}).`);
+    }
+    // Now is read once per call: the default date and the future limit come from the same instant.
+    const ahora = Date.now();
+    const fecha = a.fecha ?? horaLocal(ahora);
+    if (a.fecha !== undefined && a.fecha > horaLocal(ahora + ADELANTO_MERMA_MS)) {
+      throw new Error(`La fecha ${a.fecha} es posterior a ahora (${horaLocal(ahora)} en ${config.timezone}): una merma no se registra a futuro.`);
+    }
+    const dia = fecha.slice(0, 10);
+    const tipos = new Set(a.renglones.map((l) => l.tipo ?? "insumo"));
+    const ninguno = async (): Promise<Obj[]> => [];
+    const [alm, razones, ings, prods, pps, previas] = await Promise.all([
+      ctx.api.get<Obj[]>(a.cuenta, "storage.getStorages"),
+      a.razon_id !== undefined ? ctx.api.get<Obj[]>(a.cuenta, "storage.getWasteReasons") : ninguno(),
+      tipos.has("insumo") ? ctx.api.get<Obj[]>(a.cuenta, "menu.getIngredients") : ninguno(),
+      tipos.has("producto") || tipos.has("platillo") ? ctx.api.get<Obj[]>(a.cuenta, "menu.getProducts") : ninguno(),
+      tipos.has("precocinado") ? ctx.api.get<Obj[]>(a.cuenta, "menu.getPrepacks") : ninguno(),
+      ctx.api.get<Obj[]>(a.cuenta, "storage.getWastes", { dateFrom: fechaPoster(dia), dateTo: fechaPoster(dia) }),
+    ]);
+    // A deleted storage counts as not existing. A catalog row matches only when its own id is a positive integer.
+    const activos = (alm ?? []).filter((x) => String(x.delete) !== "1");
+    const almacen = activos.find((x) => idPositivo(x.storage_id) === a.storage_id);
+    if (!almacen) {
+      const disponibles = activos.map((x) => `${x.storage_id}=${String(x.storage_name ?? "").trim()}`).join(", ") || "(ninguno)";
+      throw new Error(`Almacén ${a.storage_id} no existe en ${a.cuenta}. Disponibles: ${disponibles}`);
+    }
+    const razon = a.razon_id === undefined ? undefined : (razones ?? []).find((x) => idPositivo(x.reason_id) === a.razon_id);
+    if (a.razon_id !== undefined && !razon) {
+      const disponibles = (razones ?? []).map((x) => `${x.reason_id}=${String(x.name ?? "").trim()}`).join(", ") || "(ninguna)";
+      throw new Error(`Razón de merma ${a.razon_id} no existe en ${a.cuenta}. Disponibles: ${disponibles}`);
+    }
+    const renglones = a.renglones.map((l) => {
+      const tipo: TipoMerma = l.tipo ?? "insumo";
+      if (tipo === "insumo") {
+        const i = (ings ?? []).find((x) => idPositivo(x.ingredient_id) === l.id);
+        if (!i) throw new Error(`Insumo ${l.id} no existe en ${a.cuenta}`);
+        return { l, tipo, nombre: String(i.ingredient_name ?? "").trim(), unidad: i.ingredient_unit ?? null };
+      }
+      if (tipo === "precocinado") {
+        const p = (pps ?? []).find((x) => idPositivo(x.product_id) === l.id);
+        if (!p) throw new Error(`Precocinado ${l.id} no existe en ${a.cuenta}`);
+        return { l, tipo, nombre: String(p.product_name ?? "").trim(), unidad: p.unit ?? null };
+      }
+      if (tipo !== "producto" && tipo !== "platillo") throw new Error(`Renglón ${l.id}: tipo ${tipo} no aceptado`);
+      const p = (prods ?? []).find((x) => idPositivo(x.product_id) === l.id);
+      if (!p) throw new Error(`${tipo === "platillo" ? "Platillo" : "Producto"} ${l.id} no existe en ${a.cuenta}`);
+      const nombre = String(p.product_name ?? "").trim();
+      if (tipo === "platillo" && num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
+      // Catalog type 2 is a dish (tech card): Poster writes it off by its ingredients, so it goes as platillo.
+      if (tipo === "producto" && num(p.type) === 2) throw new Error(`"${nombre}" (${l.id}) es un platillo: usa tipo: "platillo".`);
+      return { l, tipo, nombre, unidad: p.unit ?? null };
+    });
+
+    const avisos: string[] = [];
+    const mismas = (previas ?? [])
+      .filter((w) => idPositivo(w.storage_id) === a.storage_id && String(w.delete) !== "1")
+      .map((w) => ({ waste_id: numeroONulo(w.waste_id), id: w.waste_id, hora: horaDe(w.date) }));
+    if (mismas.length) {
+      const lista = mismas.map((w) => `${w.id} (${w.hora})`).join(", ");
+      avisos.push(`Ya hay ${mismas.length} merma(s) en este almacén el ${dia}: ${lista}. ¿Duplicada?`);
+    }
+    const mismoDia = mismas.length ? { mermas_mismo_dia: mismas.map(({ waste_id, hora }) => ({ waste_id, hora })) } : {};
+
+    // The documented request example nests storage_id and date under write_off while the parameter table lists
+    // them flat; both are sent. No `sum`: Poster computes the cost.
+    const cabecera: Obj = { storage_id: a.storage_id, date: fecha };
+    if (a.razon_id !== undefined) cabecera.reason_id = a.razon_id;
+    const payload: Obj = {
+      write_off: { ...cabecera },
+      ...cabecera,
+      ingredient: renglones.map(({ l, tipo }) => ({ id: l.id, type: TIPO_MERMA[tipo], weight: l.cantidad, ...(l.comentario?.trim() ? { reason: l.comentario.trim() } : {}) })),
+    };
+    const enviado = { storage_id: a.storage_id, fecha, razon_id: a.razon_id, renglones: renglones.map(({ l, tipo }) => ({ id: l.id, tipo, cantidad: l.cantidad })) };
+    return {
+      herramienta: "create_write_off",
+      metodo: "storage.createWriteOff",
+      payload,
+      antes: null,
+      despues: {
+        almacen: String(almacen.storage_name ?? "").trim(),
+        fecha,
+        razon: razon ? `${a.razon_id} · ${String(razon.name ?? "").trim()}` : "ninguna",
+        renglones: renglones.map(({ l, tipo, nombre, unidad }) => ({ nombre, tipo, cantidad: l.cantidad, unidad, ...(l.comentario?.trim() ? { comentario: l.comentario.trim() } : {}) })),
+      },
+      avisos: [
+        ...avisos,
+        "Póster calcula el costo de la merma; no se envía costo por unidad.",
+        "El contrato de storage.createWriteOff sigue la documentación de Póster y aún no está confirmado en una cuenta real: tras aplicar, revisa la verificación (almacén, día, razón y cantidades).",
+      ],
+      verificar: async (r) => {
+        // Without a usable id the write-off cannot be read back; the shared wrapper reports it as applied, not verified.
+        const wasteId = idPositivo(r.response);
+        if (wasteId === null) throw new Error("Póster no devolvió el id de la merma; no se puede verificar");
+        const w = await ctx.api.get<unknown>(a.cuenta, "storage.getWaste", { waste_id: wasteId });
+        const v = verificarMerma(w, wasteId, enviado);
+        return { ...v, detalle: { ...v.detalle, ...mismoDia } };
       },
     };
   });

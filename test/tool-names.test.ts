@@ -13,11 +13,12 @@ type Obj = Record<string, any>;
 
 /** Every tool the server registers, sorted. */
 const NOMBRES = [
-  "assign_supply_payment", "client_groups", "create_category", "create_client_group", "create_dish",
-  "create_ingredient", "create_prepack", "create_supply", "create_transaction", "delete_old_dish", "employees",
-  "hide_dish", "ingredients", "list_accounts", "menu_snapshot", "payment_methods", "poster_get", "prepacks",
-  "product_details", "promotions", "recent_audit", "reference_catalogs", "settings", "stock_levels", "supplies",
-  "supply_details", "update_category", "update_client_group", "update_dish", "update_dish_recipe", "update_prepack",
+  "assign_supply_payment", "client_groups", "count_sheet", "create_category", "create_client_group", "create_dish",
+  "create_ingredient", "create_prepack", "create_supply", "create_transaction", "create_write_off", "delete_old_dish",
+  "employees", "hide_dish", "ingredients", "list_accounts", "list_stocktakes", "menu_snapshot", "payment_methods",
+  "poster_get", "prepacks", "product_details", "promotions", "recent_audit", "reference_catalogs", "settings",
+  "stock_levels", "stocktake_result", "supplies", "supply_details", "update_category", "update_client_group",
+  "update_dish", "update_dish_recipe", "update_prepack",
 ];
 /** Former tool names; none of them may be served. */
 const ANTIGUOS = [
@@ -81,7 +82,7 @@ async function cargar(lecturas: Obj = {}) {
 }
 
 describe("tool names", () => {
-  it("N1 tools/list returns exactly the 31 English tool names and none of the former Spanish names", async () => {
+  it("N1 tools/list returns exactly the 35 English tool names and none of the former Spanish names", async () => {
     const { cliente } = await cargar();
     const nombres = (await cliente.listTools()).tools.map((t) => t.name).sort();
     expect(nombres).toEqual(NOMBRES);
@@ -144,6 +145,7 @@ describe("tool names", () => {
     ["create_ingredient", { nombre: "Azúcar", categoria_id: 2, unidad: "kg" }],
     ["create_supply", { storage_id: 1, supplier_id: 5, renglones: [{ id: 11, cantidad: 1, costo_unitario: 20 }] }],
     ["assign_supply_payment", { supply_id: 80, account_id: 4 }],
+    ["create_write_off", { storage_id: 1, renglones: [{ id: 11, cantidad: 1 }] }],
     ["update_dish", { product_id: 40, precio: 50 }],
     ["update_category", { category_id: 3, nombre: "Bebidas calientes" }],
     ["update_prepack", { product_id: 70, rendimiento: 2 }],

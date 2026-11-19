@@ -145,6 +145,44 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: LECTURA,
   }, envolver((a) => L.saldos(api, a)));
 
+  s.registerTool("list_stocktakes", {
+    title: "Inventarios (conteos)",
+    description:
+      "Inventarios de un almacén o de todos (storage.getStorageInventories): inicio, fin, fecha del inventario, si es retroactivo, si se realizó y costo total. " +
+      "desde/hasta filtran por el día de fin (o de inicio si no hay fin); un inventario sin ninguna de las dos fechas solo aparece sin desde/hasta. " +
+      "Del más reciente al más antiguo. Póster no permite crear ni realizar inventarios por API: se hacen en Póster y aquí solo se leen.",
+    inputSchema: {
+      cuenta,
+      storage_id: z.number().int().optional().describe("Almacén (reference_catalogs). Sin él, todos los almacenes."),
+      desde: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, incluido (día de fin, o de inicio si no hay fin)"),
+      hasta: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, incluido (día de fin, o de inicio si no hay fin)"),
+    },
+    annotations: LECTURA,
+  }, envolver((a) => L.inventarios(api, a)));
+
+  s.registerTool("stocktake_result", {
+    title: "Resultado de un inventario",
+    description:
+      "Diferencias de un inventario (storage.getInventoryIngredients): insumos, producciones y platillos/precocinados con lo calculado, lo contado y la diferencia. " +
+      "Ordena por el costo de la diferencia y suma faltantes y sobrantes. Un valor no contado se lee como null.",
+    inputSchema: {
+      cuenta,
+      inventario_id: z.number().int().describe("Inventario (list_stocktakes)"),
+      solo_diferencias: z.boolean().optional().describe("Por defecto true: solo renglones con diferencia (o, en platillos/precocinados, con conteo) distinta de 0"),
+      limite: z.number().int().min(1).max(1000).optional().describe("Renglones por grupo (por defecto 200)"),
+    },
+    annotations: LECTURA,
+  }, envolver((a) => L.inventarioResultado(api, a)));
+
+  s.registerTool("count_sheet", {
+    title: "Hoja de conteo",
+    description:
+      "Hoja para contar a ciegas un almacén (storage.getStorageLeftovers con existencias en cero): id, nombre, unidad y tipo, ordenados por nombre, sin existencias ni costos. " +
+      "Los ocultos quedan fuera salvo incluir_ocultos.",
+    inputSchema: { cuenta, storage_id: z.number().int().describe("Almacén (reference_catalogs)"), incluir_ocultos: z.boolean().optional() },
+    annotations: LECTURA,
+  }, envolver((a) => L.hojaConteo(api, a)));
+
   s.registerTool("reference_catalogs", { title: "Almacenes, proveedores y categorías", description: "IDs necesarios para escribir: almacenes, proveedores, categorías de insumos y de menú.", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.catalogosBase(api, a)));
 
   s.registerTool("poster_get", {
@@ -193,6 +231,34 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearCompra(ctx(extra), a)));
+
+  s.registerTool("create_write_off", {
+    title: "Registrar merma",
+    description:
+      "storage.createWriteOff: da de baja existencias de un almacén (merma). Póster calcula el costo; no se envía costo por unidad. " +
+      "Valida almacén, razón (storage.getWasteReasons), cada artículo y que la fecha sea real y no futura; avisa si ya hay mermas en ese almacén ese día. " +
+      "Los renglones de tipo modificador se rechazan: el servidor no puede verificar que existan. Un mismo artículo va en un solo renglón; un platillo va como tipo platillo, no producto. " +
+      "El contrato sigue la documentación de Póster y no está confirmado en una cuenta real: tras aplicar relee la merma (storage.getWaste) y compara almacén, día, razón y cantidades. " +
+      "Póster la muestra como merma, no como inventario. Dry-run por defecto.",
+    inputSchema: {
+      cuenta: cuentaEscritura,
+      storage_id: z.number().int().positive(),
+      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).optional().describe(`YYYY-MM-DD HH:MM:SS (hora de ${horaLocal}). Por defecto ahora; no puede ser futura.`),
+      razon_id: z.number().int().positive().optional().describe("Razón de merma (storage.getWasteReasons)"),
+      renglones: z
+        .array(
+          z.object({
+            id: z.number().int().positive(),
+            tipo: z.enum(["insumo", "producto", "platillo", "precocinado", "modificador"]).optional().describe("Por defecto insumo"),
+            cantidad: z.number().positive().describe("En la unidad del artículo"),
+            comentario: z.string().optional(),
+          }),
+        )
+        .min(1),
+      ...escritura,
+    },
+    annotations: ESCRITURA,
+  }, envolver((a, extra) => W.crearMerma(ctx(extra), a)));
 
   s.registerTool("assign_supply_payment", {
     title: "Pagar / asignar cuenta a una compra",

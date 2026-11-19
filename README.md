@@ -20,8 +20,12 @@ Letting an LLM write to a production POS is risky. Applying a write (`confirm: t
 
 ## Tools
 
-- **Read:** accounts, menu snapshot, product detail, ingredients, prepared items, customer groups, promotions, employees, payment methods, settings, purchases, balances, base catalogs, generic `get*` passthrough, recent audit.
-- **Write (dry-run first):** customer groups, ingredients, purchases, new dishes, dish and category updates, dish recipes, prepared items, categories, transactions, purchase payments, hide dish, delete an old hidden dish.
+- **Read:** accounts, menu snapshot, product detail, ingredients, prepared items, customer groups, promotions, employees, payment methods, settings, purchases, balances, stocktakes (`list_stocktakes`), stocktake discrepancies (`stocktake_result`), blind count sheet (`count_sheet`), base catalogs, generic `get*` passthrough, recent audit.
+- **Write (dry-run first):** customer groups, ingredients, purchases, write-offs (`create_write_off`), new dishes, dish and category updates, dish recipes, prepared items, categories, transactions, purchase payments, hide dish, delete an old hidden dish.
+
+### Stocktakes
+
+The Poster API cannot create, fill in or conduct a stocktake; staff conduct it in Poster. This server lists the stocktakes, shows a stocktake's discrepancies with their cost, and prints a blind count sheet (items without balances or costs). A shortage found outside a stocktake can be recorded with `create_write_off`; Poster shows it as a write-off, not as a stocktake.
 
 ## Stack
 

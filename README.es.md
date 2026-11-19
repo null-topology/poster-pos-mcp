@@ -27,7 +27,10 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 **Lectura** (cualquier cuenta de la lista): `list_accounts`, `menu_snapshot`, `product_details`, `ingredients`,
 `prepacks`, `client_groups`, `promotions` (vigentes = `date_end ≥ hoy`, `0000-00-00`, vacío o ausente), `employees`
 (con puestos y secciones de acceso), `payment_methods`, `settings` (`settings.getAllSettings`), `supplies`,
-`supply_details`, `stock_levels`, `reference_catalogs` (IDs de almacenes/proveedores/categorías para escribir),
+`supply_details`, `stock_levels`, `list_stocktakes` (inventarios por almacén con fechas, estado y costo total),
+`stocktake_result` (diferencias de un inventario, ordenadas por costo, con faltante y sobrante),
+`count_sheet` (hoja de conteo a ciegas, sin existencias ni costos),
+`reference_catalogs` (IDs de almacenes/proveedores/categorías para escribir),
 `poster_get` (cualquier `<modulo>.get*` crudo), `recent_audit`.
 
 **Escritura** (dry-run por defecto): `create_client_group`, `update_client_group`, `create_ingredient`,
@@ -38,7 +41,10 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 `delete_old_dish` (menu.removeDish solo para un platillo cuyo nombre termina en "(old)" y cuyos spots están todos marcados como ocultos; relee y verifica),
 `create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, mientras que `create_supply` y `create_dish` envían centavos—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories`; tras aplicar relee `finance.getTransactions`, busca el `transaction_id` de la respuesta y compara monto (tolerancia 0.5 pesos), cuenta y categoría —en transferencias solo la cuenta origen y sin categoría—, y marca una posible desviación de unidad de 100× cuando la diferencia supera la tolerancia y el monto leído es unas 100 veces mayor o menor; una respuesta de Póster sin `transaction_id` o sin cuenta se lee como 0 y puede coincidir, y eso no se detecta),
 `create_supply` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
-`assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que quedó la cuenta, que el total no cambió (tolerancia 0.5) y que el número de renglones es el mismo; el efecto en Finanzas no se verifica).
+`assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que quedó la cuenta, que el total no cambió (tolerancia 0.5) y que el número de renglones es el mismo; el efecto en Finanzas no se verifica),
+`create_write_off` (storage.createWriteOff en JSON, sin costo: Póster lo calcula; valida almacén, razón, artículos y que la fecha no sea futura; rechaza renglones de tipo modificador; avisa si ya hay mermas en ese almacén ese día; relee `storage.getWaste` y compara almacén, día, razón y cantidades; el contrato sigue la documentación de Póster y no está confirmado en una cuenta real).
+
+**Inventarios**: la API de Póster no permite crear, llenar ni realizar un inventario; el personal lo realiza en Póster. Este servidor lista los inventarios, muestra las diferencias de uno con su costo e imprime una hoja de conteo a ciegas. Un faltante encontrado fuera de un inventario se puede registrar con `create_write_off`; Póster lo muestra como merma, no como inventario.
 
 **Solo panel web**: permisos de puestos. La receta de un platillo existente se cambia con `update_dish_recipe` (update_dish rechaza platillos con receta).
 
