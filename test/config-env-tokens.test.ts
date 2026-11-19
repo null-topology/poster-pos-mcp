@@ -318,8 +318,8 @@ async function servidor(e: Record<string, string>, responder: Respuesta) {
 describe("TOKEN_SOURCE=env: MCP server and HTTP", () => {
   it("E11 a read tool requests https://<account>.joinposter.com/api/... with that account's token, URL-encoded", async () => {
     const { llamar, urls } = await servidor(CON_ENV, () => ({ response: [] }));
-    expect((await llamar("grupos_clientes", { cuenta: "tienda-b" })).isError).toBe(false);
-    expect((await llamar("grupos_clientes", { cuenta: "mi-cafe-04" })).isError).toBe(false);
+    expect((await llamar("client_groups", { cuenta: "tienda-b" })).isError).toBe(false);
+    expect((await llamar("client_groups", { cuenta: "mi-cafe-04" })).isError).toBe(false);
     const [b, c] = urls();
     expect(urls()).toHaveLength(2);
     expect(b.startsWith("https://tienda-b.joinposter.com/api/clients.getGroups?token=770044%3AZqEnvTokenB~beta&")).toBe(true);
@@ -329,7 +329,7 @@ describe("TOKEN_SOURCE=env: MCP server and HTTP", () => {
 
   it("E12 env tokens in a Poster error are absent from the tool error returned to the client", async () => {
     const { llamar } = await servidor(CON_ENV, () => ({ error: 10, message: `Token ${TOKEN_A} no coincide con ${TOKEN_B}` }));
-    const r = await llamar("grupos_clientes", { cuenta: "tienda-b" });
+    const r = await llamar("client_groups", { cuenta: "tienda-b" });
     expect(r.isError).toBe(true);
     expect(r.texto).toContain("clients.getGroups");
     expect(r.texto).toContain("***");
@@ -340,7 +340,7 @@ describe("TOKEN_SOURCE=env: MCP server and HTTP", () => {
     const { llamar, auditDir, consola } = await servidor(CON_ENV, (_url, init) =>
       init?.method === "POST" ? { error: 32, message: `Token ${TOKEN_A} sin permiso; recibido ${TOKEN_B}` } : { response: [] },
     );
-    const r = await llamar("crear_grupo_cliente", { cuenta: "tienda-b", ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { cuenta: "tienda-b", ...GRUPO, confirm: true });
     expect(r.isError).toBe(false);
     expect(JSON.parse(r.texto).modo).toBe("rechazado");
     for (const tok of [TOKEN_A, TOKEN_B]) expect(r.texto, "tool result").not.toContain(tok);
@@ -351,7 +351,7 @@ describe("TOKEN_SOURCE=env: MCP server and HTTP", () => {
     expect(lineas).toHaveLength(1);
     const entrada = JSON.parse(lineas[0]);
     expect(entrada.modo).toBe("rechazado");
-    expect(entrada.herramienta).toBe("crear_grupo_cliente");
+    expect(entrada.herramienta).toBe("create_client_group");
     expect(lineas[0]).toContain("***");
     const registro = consola.mock.calls.map((a) => a.map(String).join(" ")).filter((l) => l.includes('"audit":true'));
     expect(registro).toHaveLength(1);

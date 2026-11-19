@@ -65,7 +65,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       (escribibles
         ? `Por defecto solo ${escribibles}; otra cuenta requiere permitir_otra_cuenta:true y autorización explícita. `
         : "Ninguna cuenta se escribe por defecto; toda escritura requiere permitir_otra_cuenta:true y autorización explícita. ") +
-      `Productos fuera de carta se OCULTAN (ocultar_platillo); solo se borran con borrar_platillo_old si ${ownerName} lo pide para liberar lugar del plan. Platillos nuevos con receta: crear_platillo. actualizar_platillo no toca platillos con receta; permisos de puestos solo en panel web.`,
+      `Productos fuera de carta se OCULTAN (hide_dish); solo se borran con delete_old_dish si ${ownerName} lo pide para liberar lugar del plan. Platillos nuevos con receta: create_dish. update_dish no toca platillos con receta; permisos de puestos solo en panel web.`,
   });
   const ctx = (extra: any): W.Contexto => ({
     api,
@@ -74,7 +74,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   });
 
   // ── Lectura ──
-  s.registerTool("listar_cuentas", { title: "Cuentas Póster", description: "Lista blanca de cuentas y cuáles permiten escritura por defecto.", annotations: LECTURA }, async () => ok(L.listarCuentas()));
+  s.registerTool("list_accounts", { title: "Cuentas Póster", description: "Lista blanca de cuentas y cuáles permiten escritura por defecto.", annotations: LECTURA }, async () => ok(L.listarCuentas()));
 
   s.registerTool("menu_snapshot", {
     title: "Menú (resumen)",
@@ -83,69 +83,69 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: LECTURA,
   }, envolver((a) => L.menuSnapshot(api, a)));
 
-  s.registerTool("producto_detalle", {
+  s.registerTool("product_details", {
     title: "Detalle de producto",
     description: "Un producto completo: spots, grupos de modificadores con opciones (precio en pesos) y receta.",
     inputSchema: { cuenta, product_id: z.number().int() },
     annotations: LECTURA,
   }, envolver((a) => L.productoDetalle(api, a)));
 
-  s.registerTool("insumos", {
+  s.registerTool("ingredients", {
     title: "Insumos",
     description: "Insumos con categoría, unidad, existencia total y costo en pesos.",
     inputSchema: { cuenta, buscar: z.string().optional(), categoria_id: z.number().int().optional(), limite: z.number().int().min(1).max(1000).optional() },
     annotations: LECTURA,
   }, envolver((a) => L.insumos(api, a)));
 
-  s.registerTool("precocinados", {
+  s.registerTool("prepacks", {
     title: "Precocinados",
     description: "Precocinados (prepacks) con rendimiento y receta línea por línea.",
     inputSchema: { cuenta, buscar: z.string().optional() },
     annotations: LECTURA,
   }, envolver((a) => L.precocinados(api, a)));
 
-  s.registerTool("grupos_clientes", {
+  s.registerTool("client_groups", {
     title: "Grupos de clientes",
     description: "Grupos de clientes (puntos/descuento, porcentaje, # clientes).",
     inputSchema: { cuenta, incluir_borrados: z.boolean().optional() },
     annotations: LECTURA,
   }, envolver((a) => L.gruposClientes(api, a)));
 
-  s.registerTool("promociones", {
+  s.registerTool("promotions", {
     title: "Promociones",
     description: "Promociones. Por defecto solo vigentes (date_end ≥ hoy o 0000-00-00).",
     inputSchema: { cuenta, solo_vigentes: z.boolean().default(true) },
     annotations: LECTURA,
   }, envolver((a) => L.promociones(api, a)));
 
-  s.registerTool("empleados", {
+  s.registerTool("employees", {
     title: "Empleados y puestos",
     description: "Empleados con puesto, rol y secciones a las que tienen acceso; resumen de puestos.",
     inputSchema: { cuenta },
     annotations: LECTURA,
   }, envolver((a) => L.empleados(api, a)));
 
-  s.registerTool("metodos_pago", { title: "Métodos de pago", description: "Métodos de pago configurados (settings.getPaymentMethods).", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.metodosPago(api, a)));
+  s.registerTool("payment_methods", { title: "Métodos de pago", description: "Métodos de pago configurados (settings.getPaymentMethods).", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.metodosPago(api, a)));
 
-  s.registerTool("ajustes", { title: "Ajustes de la cuenta", description: "settings.getAllSettings completo.", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.ajustes(api, a)));
+  s.registerTool("settings", { title: "Ajustes de la cuenta", description: "settings.getAllSettings completo.", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.ajustes(api, a)));
 
-  s.registerTool("compras", {
+  s.registerTool("supplies", {
     title: "Compras",
     description: "Compras (storage.getSupplies) más recientes primero; total en pesos. Fechas YYYY-MM-DD.",
     inputSchema: { cuenta, desde: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), hasta: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), limite: z.number().int().min(1).max(500).optional() },
     annotations: LECTURA,
   }, envolver((a) => L.compras(api, a)));
 
-  s.registerTool("compra_detalle", { title: "Detalle de compra", description: "Renglones de una compra (storage.getSupply) con importe y unitario en pesos.", inputSchema: { cuenta, supply_id: z.number().int() }, annotations: LECTURA }, envolver((a) => L.compraDetalle(api, a)));
+  s.registerTool("supply_details", { title: "Detalle de compra", description: "Renglones de una compra (storage.getSupply) con importe y unitario en pesos.", inputSchema: { cuenta, supply_id: z.number().int() }, annotations: LECTURA }, envolver((a) => L.compraDetalle(api, a)));
 
-  s.registerTool("saldos", {
+  s.registerTool("stock_levels", {
     title: "Saldos de inventario",
     description: "Existencias por almacén (storage.getStorageLeftovers). Puede filtrar negativos.",
     inputSchema: { cuenta, storage_id: z.number().int().optional(), buscar: z.string().optional(), solo_negativos: z.boolean().optional(), limite: z.number().int().min(1).max(1000).optional() },
     annotations: LECTURA,
   }, envolver((a) => L.saldos(api, a)));
 
-  s.registerTool("catalogos_base", { title: "Almacenes, proveedores y categorías", description: "IDs necesarios para escribir: almacenes, proveedores, categorías de insumos y de menú.", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.catalogosBase(api, a)));
+  s.registerTool("reference_catalogs", { title: "Almacenes, proveedores y categorías", description: "IDs necesarios para escribir: almacenes, proveedores, categorías de insumos y de menú.", inputSchema: { cuenta }, annotations: LECTURA }, envolver((a) => L.catalogosBase(api, a)));
 
   s.registerTool("poster_get", {
     title: "Lectura genérica",
@@ -154,33 +154,33 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: LECTURA,
   }, envolver((a) => L.posterGet(api, a)));
 
-  s.registerTool("auditoria_reciente", { title: "Auditoría", description: "Últimas escrituras/dry-runs registrados en esta instancia.", inputSchema: { limite: z.number().int().min(1).max(200).default(20) }, annotations: LECTURA }, envolver(async (a: { limite: number }) => auditoriaReciente(a.limite)));
+  s.registerTool("recent_audit", { title: "Auditoría", description: "Últimas escrituras/dry-runs registrados en esta instancia.", inputSchema: { limite: z.number().int().min(1).max(200).default(20) }, annotations: LECTURA }, envolver(async (a: { limite: number }) => auditoriaReciente(a.limite)));
 
   // ── Escritura ──
-  s.registerTool("crear_grupo_cliente", {
+  s.registerTool("create_client_group", {
     title: "Crear grupo de clientes",
     description: "clients.createGroup. Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, nombre: z.string().min(1), tipo: z.enum(["puntos", "descuento"]), porcentaje: z.number().min(0).max(100), bono_cumple: z.number().min(0).optional(), usar_monedero: z.boolean().optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearGrupoCliente(ctx(extra), a)));
 
-  s.registerTool("actualizar_grupo_cliente", {
+  s.registerTool("update_client_group", {
     title: "Actualizar grupo de clientes",
     description: "clients.updateGroup (envía el grupo completo; conserva lo no indicado). Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, client_groups_id: z.number().int(), nombre: z.string().min(1).optional(), tipo: z.enum(["puntos", "descuento"]).optional(), porcentaje: z.number().min(0).max(100).optional(), bono_cumple: z.number().min(0).optional(), usar_monedero: z.boolean().optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.actualizarGrupoCliente(ctx(extra), a)));
 
-  s.registerTool("crear_insumo", {
+  s.registerTool("create_ingredient", {
     title: "Crear insumo",
     description: "menu.createIngredient (rechaza nombres duplicados). Unidad: kg, l o p (pieza). Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, nombre: z.string().min(1), categoria_id: z.number().int(), unidad: z.enum(["kg", "l", "p"]), peso_pieza_g: z.number().min(0).optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearInsumo(ctx(extra), a)));
 
-  s.registerTool("crear_compra", {
+  s.registerTool("create_supply", {
     title: "Crear compra",
-    description: "storage.createSupply. costo_unitario en PESOS por unidad del insumo (se envía en centavos). account_id opcional = cuenta de Finanzas que paga al momento; sin él la compra queda a crédito (sin pagar) y se paga después con asignar_pago_compra. Tras aplicar verifica el total leyendo la compra. Dry-run por defecto.",
+    description: "storage.createSupply. costo_unitario en PESOS por unidad del insumo (se envía en centavos). account_id opcional = cuenta de Finanzas que paga al momento; sin él la compra queda a crédito (sin pagar) y se paga después con assign_supply_payment. Tras aplicar verifica el total leyendo la compra. Dry-run por defecto.",
     inputSchema: {
       cuenta: cuentaEscritura,
       storage_id: z.number().int(),
@@ -194,7 +194,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearCompra(ctx(extra), a)));
 
-  s.registerTool("asignar_pago_compra", {
+  s.registerTool("assign_supply_payment", {
     title: "Pagar / asignar cuenta a una compra",
     description:
       "storage.updateSupply: asigna (o reasigna) la cuenta de Finanzas que paga una compra existente — el equivalente del botón \"pagar\" de Póster para compras a crédito. " +
@@ -203,7 +203,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.asignarPagoCompra(ctx(extra), a)));
 
-  s.registerTool("actualizar_platillo", {
+  s.registerTool("update_dish", {
     title: "Actualizar platillo",
     description:
       "menu.updateDish (update COMPLETO). Cambia nombre, categoría, precio (pesos), visibilidad, color o precio de opciones (pesos). " +
@@ -222,14 +222,14 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.actualizarPlatillo(ctx(extra), a)));
 
-  s.registerTool("actualizar_categoria", {
+  s.registerTool("update_category", {
     title: "Actualizar categoría del menú",
     description: "menu.updateCategory: renombrar o mover bajo otra categoría (padre_id 0 = raíz). Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, category_id: z.number().int(), nombre: z.string().min(1).optional(), padre_id: z.number().int().min(0).optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.actualizarCategoria(ctx(extra), a)));
 
-  s.registerTool("actualizar_precocinado", {
+  s.registerTool("update_prepack", {
     title: "Actualizar precocinado",
     description: "menu.updatePrepack: nombre, rendimiento (out) y/o receta COMPLETA (reemplaza todas las líneas; unidades g/ml/p). Dry-run por defecto.",
     inputSchema: {
@@ -266,21 +266,21 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
         })).min(1),
       }));
 
-  s.registerTool("crear_categoria", {
+  s.registerTool("create_category", {
     title: "Crear categoría del menú",
     description: "menu.createCategory (rechaza nombre duplicado). padre_id 0 = raíz. Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, nombre: z.string().min(1), padre_id: z.number().int().min(0).optional(), color: z.string().optional().describe("white, red, orange, yellow, green, blue, navy blue, purple, black, mint blue, lime green, pink"), oculta: z.boolean().optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearCategoria(ctx(extra), a)));
 
-  s.registerTool("crear_precocinado", {
+  s.registerTool("create_prepack", {
     title: "Crear precocinado",
     description: "menu.createPrepack con receta (valida que cada insumo/precocinado exista; rechaza nombre duplicado). Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, nombre: z.string().min(1), receta: z.array(lineaReceta).min(1), descripcion: z.string().optional(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearPrecocinado(ctx(extra), a)));
 
-  s.registerTool("crear_platillo", {
+  s.registerTool("create_dish", {
     title: "Crear platillo con receta",
     description:
       "menu.createDish con receta y grupos de modificadores. Precios en PESOS (se envían en centavos). Valida IDs por tipo, categoría y nombre duplicado; " +
@@ -300,7 +300,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearPlatillo(ctx(extra), a)));
 
-  s.registerTool("ocultar_platillo", {
+  s.registerTool("hide_dish", {
     title: "Ocultar platillo (sacar de carta)",
     description:
       "menu.getProduct + menu.updateDish con el payload COMPLETO (receta, grupos y opciones con sus IDs): visible 0 en todos los spots y sufijo \" (old)\". " +
@@ -309,16 +309,16 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.ocultarPlatillo(ctx(extra), a)));
 
-  s.registerTool("borrar_platillo_old", {
+  s.registerTool("delete_old_dish", {
     title: "Borrar platillo (old) para liberar lugar",
     description:
-      "menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en \"(old)\" (pasaron por ocultar_platillo). " +
+      "menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en \"(old)\" (pasaron por hide_dish). " +
       `Úsalo únicamente cuando ${ownerName} pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.`,
     inputSchema: { cuenta: cuentaEscritura, product_id: z.number().int(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.borrarPlatilloOld(ctx(extra), a)));
 
-  s.registerTool("actualizar_receta_platillo", {
+  s.registerTool("update_dish_recipe", {
     title: "Actualizar receta y grupos de un platillo",
     description:
       "menu.updateDish COMPLETO para un platillo con receta: reemplaza receta y grupos de modificadores (ej. sacar el empaque de la receta y agregar el grupo \"Servicio\" con En local / Para llevar). " +
@@ -328,7 +328,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   }, envolver((a, extra) => W.actualizarRecetaPlatillo(ctx(extra), a)));
 
   // ── Finanzas ──
-  s.registerTool("crear_transaccion", {
+  s.registerTool("create_transaction", {
     title: "Registrar transacción en Finanzas",
     description:
       "finance.createTransactions: registra un gasto (type 0), ingreso (type 1) o transferencia (type 2). " +

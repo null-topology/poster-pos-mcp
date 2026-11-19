@@ -1,4 +1,4 @@
-// Compras y su pago: account_id en crear_compra + asignar_pago_compra (el botón "pagar" de Póster).
+// Compras y su pago: account_id en create_supply + assign_supply_payment (el botón "pagar" de Póster).
 import { describe, it, expect, vi } from "vitest";
 import * as W from "../src/tools/escritura.js";
 import type { PosterApi } from "../src/poster.js";
@@ -48,7 +48,7 @@ function apiCompras(opts: { supply?: Obj; updateSetea?: boolean } = {}) {
 const num = (v: unknown) => Number(v);
 const ctx = (api: PosterApi) => ({ api, actor: "test" });
 
-describe("crear_compra · account_id", () => {
+describe("create_supply · account_id", () => {
   const compra = (extra: Obj = {}) => ({
     cuenta: "cafe-04" as const, storage_id: 3, supplier_id: 98,
     renglones: [{ id: 662, tipo: "producto" as const, cantidad: 5, costo_unitario: 65 }],
@@ -73,7 +73,7 @@ describe("crear_compra · account_id", () => {
   });
 });
 
-describe("asignar_pago_compra", () => {
+describe("assign_supply_payment", () => {
   it("dry-run: arma updateSupply con la cuenta nueva y NO escribe", async () => {
     const { api, post } = apiCompras();
     const r: any = await W.asignarPagoCompra(ctx(api), { cuenta: "cafe-04", supply_id: 2606, account_id: 4 });

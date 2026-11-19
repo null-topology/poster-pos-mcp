@@ -24,7 +24,7 @@ async function modulos(zona: string | undefined) {
   return { util: await import("../src/util.js"), W: await import("../src/tools/escritura.js") };
 }
 
-/** Fake Poster API with what the dry runs of crear_compra and crear_transaccion read. */
+/** Fake Poster API with what the dry runs of create_supply and create_transaction read. */
 function apiFalsa(): PosterApi {
   const db: Obj = {
     "storage.getStorages": [{ storage_id: "3", storage_name: "Barra", delete: "0" }],
@@ -61,7 +61,7 @@ describe("TIMEZONE", () => {
     expect(util.hoyMx(INSTANTE)).toBe("2026-03-09");
   });
 
-  it("Z3 the default timestamp of crear_transaccion follows the configured zone", async () => {
+  it("Z3 the default timestamp of create_transaction follows the configured zone", async () => {
     const { W } = await modulos("Asia/Tokyo");
     enInstante();
     const r = await transaccion(W);
@@ -69,7 +69,7 @@ describe("TIMEZONE", () => {
     expect(r.payload.date).toBe("2026-03-10 12:30:00");
   });
 
-  it("Z4 the default timestamp of crear_compra follows the configured zone", async () => {
+  it("Z4 the default timestamp of create_supply follows the configured zone", async () => {
     const { W } = await modulos("Asia/Tokyo");
     enInstante();
     const r = await compra(W);

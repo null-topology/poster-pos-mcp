@@ -96,7 +96,7 @@ describe("contrato updateDish", () => {
 });
 
 describe("otros dry-run", () => {
-  it("crear_compra arma multipart con sum en centavos por unidad", async () => {
+  it("create_supply arma multipart con sum en centavos por unidad", async () => {
     const { api, post } = apiFalsa({
       "storage.getStorages": [{ storage_id: "1", storage_name: "Inventory count" }],
       "storage.getSuppliers": [{ supplier_id: "4", supplier_name: "Rush Periferica" }],
@@ -110,12 +110,12 @@ describe("otros dry-run", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("crear_insumo rechaza duplicado por nombre normalizado", async () => {
+  it("create_ingredient rechaza duplicado por nombre normalizado", async () => {
     const { api } = apiFalsa({ "menu.getIngredients": [{ ingredient_id: 1, ingredient_name: "Limón" }], "menu.getCategoriesIngredients": [{ category_id: 1, name: "barra" }] });
     await expect(W.crearInsumo(ctx(api), { cuenta: "cafe-04", nombre: "limon", categoria_id: 1, unidad: "kg" })).rejects.toThrow(/Ya existe/);
   });
 
-  it("actualizar_precocinado conserva receta y cambia rendimiento", async () => {
+  it("update_prepack conserva receta y cambia rendimiento", async () => {
     const pp = [{ product_id: "37", product_name: "Cold Brew", unit: "kg", out: 2000, ingredients: [
       { ingredient_id: "97", structure_type: "1", structure_brutto: "250", structure_netto: 250, structure_unit: "g", structure_lock: "1" },
     ] }];

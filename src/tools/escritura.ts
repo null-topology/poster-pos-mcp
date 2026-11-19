@@ -103,7 +103,7 @@ export async function crearGrupoCliente(
   return ejecutar(ctx, a, async () => {
     const grupos = await ctx.api.get<Obj[]>(a.cuenta, "clients.getGroups");
     const dup = grupos.find((g) => String(g.delete) !== "1" && norm(g.client_groups_name) === norm(a.nombre));
-    if (dup) throw new Error(`Ya existe el grupo "${dup.client_groups_name}" (id ${dup.client_groups_id}). Usa actualizar_grupo_cliente.`);
+    if (dup) throw new Error(`Ya existe el grupo "${dup.client_groups_name}" (id ${dup.client_groups_id}). Usa update_client_group.`);
     const payload: Obj = {
       client_groups_name: a.nombre,
       loyalty_type: tipoLealtad(a.tipo),
@@ -112,7 +112,7 @@ export async function crearGrupoCliente(
       use_ewallet: a.usar_monedero ? 1 : 0,
     };
     return {
-      herramienta: "crear_grupo_cliente",
+      herramienta: "create_client_group",
       metodo: "clients.createGroup",
       payload,
       antes: null,
@@ -150,7 +150,7 @@ export async function actualizarGrupoCliente(
       ...(a.usar_monedero !== undefined && { use_ewallet: a.usar_monedero ? 1 : 0 }),
     };
     return {
-      herramienta: "actualizar_grupo_cliente",
+      herramienta: "update_client_group",
       metodo: "clients.updateGroup",
       payload,
       antes,
@@ -180,7 +180,7 @@ export async function crearInsumo(
     if (!cat) throw new Error(`Categoría de insumos ${a.categoria_id} no existe. Disponibles: ${cats.map((c) => `${c.category_id}=${c.name}`).join(", ")}`);
     const payload = { ingredient_name: a.nombre, category_id: a.categoria_id, type: a.unidad, weight_ingredient: a.peso_pieza_g ?? 0 };
     return {
-      herramienta: "crear_insumo",
+      herramienta: "create_ingredient",
       metodo: "menu.createIngredient",
       payload,
       antes: null,
@@ -241,7 +241,7 @@ export async function crearCompra(
     if (a.account_id !== undefined) payload.account_id = a.account_id; // con cuenta = pagada al momento; sin cuenta = queda a crédito
     const total = renglones.reduce((s, { l }) => s + l.cantidad * l.costo_unitario, 0);
     return {
-      herramienta: "crear_compra",
+      herramienta: "create_supply",
       metodo: "storage.createSupply",
       payload,
       form: true,
@@ -251,9 +251,9 @@ export async function crearCompra(
         proveedor: p.supplier_name,
         renglones: renglones.map(({ l, nombre, unidad }) => ({ nombre, cantidad: l.cantidad, unidad, unitario_pesos: l.costo_unitario, importe_pesos: Math.round(l.cantidad * l.costo_unitario * 100) / 100 })),
         total_pesos: Math.round(total * 100) / 100,
-        cuenta_pago: cuentaPago ? `${a.account_id} · ${String(cuentaPago.name).trim()}` : "— (a crédito: sin pagar; asigna la cuenta después con asignar_pago_compra)",
+        cuenta_pago: cuentaPago ? `${a.account_id} · ${String(cuentaPago.name).trim()}` : "— (a crédito: sin pagar; asigna la cuenta después con assign_supply_payment)",
       },
-      avisos: [...avisos, "Una compra mueve existencias y costo promedio de los insumos.", ...(a.account_id === undefined ? ["Sin account_id la compra queda a crédito (account_id vacío). El pago se asigna luego con asignar_pago_compra (el botón \"pagar\" de Póster)."] : ["Con account_id, Póster postea el gasto en Finanzas a esa cuenta al momento."])],
+      avisos: [...avisos, "Una compra mueve existencias y costo promedio de los insumos.", ...(a.account_id === undefined ? ["Sin account_id la compra queda a crédito (account_id vacío). El pago se asigna luego con assign_supply_payment (el botón \"pagar\" de Póster)."] : ["Con account_id, Póster postea el gasto en Finanzas a esa cuenta al momento."])],
       verificar: async (r) => {
         const d = await ctx.api.get<Obj>(a.cuenta, "storage.getSupply", { supply_id: num(r.response) });
         const real = num(d?.supply_sum);
@@ -353,7 +353,7 @@ export async function actualizarPlatillo(
     }
     const payload = sinIds(despues);
     return {
-      herramienta: "actualizar_platillo",
+      herramienta: "update_dish",
       metodo: "menu.updateDish",
       payload,
       antes: sinIds(antes),
@@ -381,7 +381,7 @@ export async function actualizarCategoria(ctx: Contexto, a: BaseEscritura & { ca
     const antes = { category_id: a.category_id, category_name: c.category_name, parent_category: num(c.parent_category) };
     const payload = { ...antes, ...(a.nombre !== undefined && { category_name: a.nombre }), ...(a.padre_id !== undefined && { parent_category: a.padre_id }) };
     return {
-      herramienta: "actualizar_categoria",
+      herramienta: "update_category",
       metodo: "menu.updateCategory",
       payload,
       antes,
@@ -442,7 +442,7 @@ export async function actualizarPrecocinado(
     const antes = { prepack_id: a.product_id, product_id: a.product_id, product_name: String(p.product_name).trim(), prepack_unit: p.unit || "kg", out: num(p.out), ingredient: conv(actuales) };
     const payload = { ...antes, ...(a.nombre !== undefined && { product_name: a.nombre }), ...(a.rendimiento !== undefined && { out: a.rendimiento }), ingredient: conv(receta) };
     return {
-      herramienta: "actualizar_precocinado",
+      herramienta: "update_prepack",
       metodo: "menu.updatePrepack",
       payload,
       antes,
@@ -536,18 +536,18 @@ const firmaGrupos = (gs: Obj[], conBrutto = false) =>
   gs.map((g) => `${String(g.name).trim()}|${num(g.num_min ?? g.minNum)}-${num(g.num_max ?? g.maxNum)}|` +
     (g.modifications ?? []).map((m: Obj) => `${num(m.ingredient_id ?? m.ingredientId)}${conBrutto ? `:${num(m.brutto)}` : ""}@${num(m.price)}`).sort().join(",")).sort();
 
-// ── crear_categoria (menu.createCategory) ───────────────────────────────────
+// ── create_category (menu.createCategory) ───────────────────────────────────
 export async function crearCategoria(ctx: Contexto, a: BaseEscritura & { nombre: string; padre_id?: number; color?: string; oculta?: boolean }) {
   return ejecutar(ctx, a, async () => {
     const cats = await ctx.api.get<Obj[]>(a.cuenta, "menu.getCategories");
     const dup = cats.find((c) => String(c.category_hidden ?? "0") !== "2" && norm(c.category_name) === norm(a.nombre));
-    if (dup) throw new Error(`Ya existe la categoría "${String(dup.category_name).trim()}" (id ${dup.category_id}). Úsala o renómbrala con actualizar_categoria.`);
+    if (dup) throw new Error(`Ya existe la categoría "${String(dup.category_name).trim()}" (id ${dup.category_id}). Úsala o renómbrala con update_category.`);
     const padre = a.padre_id ?? 0;
     if (padre !== 0 && !cats.some((c) => num(c.category_id) === padre)) throw new Error(`Categoría padre ${padre} no existe`);
     const parecidas = cats.filter((c) => norm(c.category_name).split(/\s+/).some((w) => w.length > 4 && norm(a.nombre).includes(w)));
     const payload = { category_name: a.nombre, parent_category: padre, category_color: a.color ?? "orange", category_hidden: a.oculta ? 1 : 0 };
     return {
-      herramienta: "crear_categoria",
+      herramienta: "create_category",
       metodo: "menu.createCategory",
       payload,
       antes: null,
@@ -561,19 +561,19 @@ export async function crearCategoria(ctx: Contexto, a: BaseEscritura & { nombre:
   });
 }
 
-// ── crear_precocinado (menu.createPrepack) ──────────────────────────────────
+// ── create_prepack (menu.createPrepack) ─────────────────────────────────────
 export async function crearPrecocinado(ctx: Contexto, a: BaseEscritura & { nombre: string; receta: LineaReceta[]; descripcion?: string }) {
   return ejecutar(ctx, a, async () => {
     const cat = await catalogoRecetas(ctx.api, a.cuenta);
     const dup = cat.pps.find((p) => norm(p.product_name) === norm(a.nombre));
-    if (dup) throw new Error(`Ya existe el precocinado "${String(dup.product_name).trim()}" (id ${dup.product_id}). Usa actualizar_precocinado.`);
+    if (dup) throw new Error(`Ya existe el precocinado "${String(dup.product_name).trim()}" (id ${dup.product_id}). Usa update_prepack.`);
     if (!a.receta.length) throw new Error("El precocinado necesita al menos una línea de receta");
     const legible = a.receta.map((l) => ({ ...lineaPoster(l), nombre: cat.nombre(l.tipo ?? 1, l.ingredient_id), unidad: cat.unidad(l.tipo ?? 1, l.ingredient_id) }));
     const payload: Obj = { product_name: a.nombre, ingredient: a.receta.map(lineaPoster) };
     if (a.descripcion) payload.product_production_description = a.descripcion;
     const esperado = firmaReceta(payload.ingredient);
     return {
-      herramienta: "crear_precocinado",
+      herramienta: "create_prepack",
       metodo: "menu.createPrepack",
       payload,
       antes: null,
@@ -615,7 +615,7 @@ const gruposPoster = (grupos: GrupoAlta[]) =>
     modifications: g.opciones.map((o) => ({ ingredientId: o.ingredient_id, type: TIPO_OPCION[o.tipo ?? "insumo"], name: o.nombre, brutto: o.brutto, price: centavos(o.precio ?? 0) })),
   }));
 
-// ── crear_platillo (menu.createDish) ────────────────────────────────────────
+// ── create_dish (menu.createDish) ───────────────────────────────────────────
 export async function crearPlatillo(
   ctx: Contexto,
   a: BaseEscritura & {
@@ -665,7 +665,7 @@ export async function crearPlatillo(
     // opciones se escriben en centavos y se leen en pesos: la firma esperada usa pesos
     const esperadoGrupos = firmaGrupos(modificationgroup.map((g) => ({ ...g, modifications: g.modifications.map((m) => ({ ...m, price: m.price / 100 })) })));
     return {
-      herramienta: "crear_platillo",
+      herramienta: "create_dish",
       metodo: "menu.createDish",
       payload,
       antes: null,
@@ -697,7 +697,7 @@ export async function crearPlatillo(
   });
 }
 
-// ── ocultar_platillo (menu.getProduct + menu.updateDish COMPLETO) ───────────
+// ── hide_dish (menu.getProduct + menu.updateDish COMPLETO) ──────────────────
 export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; sufijo?: string }) {
   return ejecutar(ctx, a, async () => {
     const sufijo = a.sufijo ?? " (old)";
@@ -708,7 +708,7 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
     const yaOculto = (p.spots ?? []).length > 0 && (p.spots ?? []).every((s: Obj) => String(s.visible) !== "1");
     if (yaOculto && nombre.endsWith(sufijo.trim())) throw new Error(`"${nombre}" ya está oculto y renombrado: nada que hacer.`);
     const receta = recetaParaEscribir(p);
-    // Base = payload completo que ya usa actualizar_platillo; se añade receta e IDs de grupos/opciones para no perder nada
+    // Base = payload completo que ya usa update_dish; se añade receta e IDs de grupos/opciones para no perder nada
     const base = payloadUpdateDish(p);
     const grupos = (p.group_modifications ?? []).map((g: Obj, gi: number) => ({
       dish_modification_group_id: num(g.dish_modification_group_id),
@@ -721,7 +721,7 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
     payload.product_name = nombre.endsWith(sufijo.trim()) ? nombre : `${nombre}${sufijo}`;
     for (const s of Object.keys(payload.visible)) payload.visible[s] = 0;
     return {
-      herramienta: "ocultar_platillo",
+      herramienta: "hide_dish",
       metodo: "menu.updateDish",
       payload,
       antes,
@@ -740,21 +740,21 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
   });
 }
 
-// ── borrar_platillo_old (menu.removeDish) ───────────────────────────────────
+// ── delete_old_dish (menu.removeDish) ───────────────────────────────────────
 // Solo para liberar lugar del plan de Póster: el platillo debe estar OCULTO en todos los spots
-// y su nombre debe terminar en "(old)" (es decir, ya pasó por ocultar_platillo). Las ventas históricas se conservan.
+// y su nombre debe terminar en "(old)" (es decir, ya pasó por hide_dish). Las ventas históricas se conservan.
 export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { product_id: number }) {
   return ejecutar(ctx, a, async () => {
     const p = await leerProducto(ctx.api, a.cuenta, a.product_id);
     if (!p) throw new Error(`Producto ${a.product_id} no existe en ${a.cuenta}`);
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
     const nombre = String(p.product_name).trim();
-    if (!/\(old\)$/i.test(nombre)) throw new Error(`"${nombre}" no termina en "(old)": primero ocúltalo con ocultar_platillo.`);
+    if (!/\(old\)$/i.test(nombre)) throw new Error(`"${nombre}" no termina en "(old)": primero ocúltalo con hide_dish.`);
     const visible = (p.spots ?? []).some((s: Obj) => String(s.visible) === "1");
     if (visible) throw new Error(`"${nombre}" sigue visible en algún spot: no se borra.`);
     const payload = { dish_id: a.product_id };
     return {
-      herramienta: "borrar_platillo_old",
+      herramienta: "delete_old_dish",
       metodo: "menu.removeDish",
       payload,
       antes: { product_id: a.product_id, nombre, receta: `${(p.ingredients ?? []).length} líneas`, grupos: (p.group_modifications ?? []).length },
@@ -770,7 +770,7 @@ export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { prod
 }
 
 
-// ── actualizar_receta_platillo (menu.updateDish COMPLETO con receta y grupos nuevos) ─
+// ── update_dish_recipe (menu.updateDish COMPLETO con receta y grupos nuevos) ─
 // Reemplaza receta y grupos de un platillo existente; conserva nombre, categoría, workshop, color, precio y visibilidad.
 export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; receta: LineaReceta[]; grupos: GrupoAlta[] }) {
   return ejecutar(ctx, a, async () => {
@@ -796,7 +796,7 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
     const esperadoReceta = firmaReceta(receta);
     const esperadoGrupos = firmaGrupos(payload.modificationgroup.map((g) => ({ ...g, modifications: g.modifications.map((m) => ({ ...m, price: m.price / 100 })) })));
     return {
-      herramienta: "actualizar_receta_platillo",
+      herramienta: "update_dish_recipe",
       metodo: "menu.updateDish",
       payload,
       antes: { nombre: String(p.product_name).trim(), receta: legible(actual), grupos: gruposLegibles(p.group_modifications ?? []) },
@@ -914,7 +914,7 @@ export async function crearTransaccion(
     avisos.push("Montos enviados en PESOS (finance.createTransactions NO usa centavos, al revés que el resto de la API). Tras aplicar se relee en centavos; si queda 100× desviado, NO repitas: corrige en el panel y revisa la unidad.");
 
     return {
-      herramienta: "crear_transaccion",
+      herramienta: "create_transaction",
       metodo: "finance.createTransactions",
       payload,
       antes: null,
@@ -973,7 +973,7 @@ export async function crearTransaccion(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// asignar_pago_compra (storage.updateSupply): el "botón pagar" de Póster por API
+// assign_supply_payment (storage.updateSupply): el "botón pagar" de Póster por API
 //   Compra a crédito → entra a inventario con account_id "" (sin pagar). Asignarle la cuenta
 //   hace que Póster postee el gasto en Finanzas, ligado a la compra (binding_type 12).
 //   updateSupply es update COMPLETO: se relee la compra y se reenvía TAL CUAL, cambiando solo account_id.
@@ -1015,7 +1015,7 @@ export async function asignarPagoCompra(ctx: Contexto, a: BaseEscritura & { supp
       ingredients: renglones,
     };
     return {
-      herramienta: "asignar_pago_compra",
+      herramienta: "assign_supply_payment",
       metodo: "storage.updateSupply",
       payload,
       form: true,

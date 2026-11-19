@@ -45,7 +45,7 @@ describe("no new variables: today's behaviour", () => {
   it("D1 tools/list shows the ten default accounts and cafe-04 as write default", async () => {
     const m = await conectar();
     const lectura = m.herramienta("menu_snapshot").inputSchema;
-    const escritura = m.herramienta("crear_grupo_cliente").inputSchema;
+    const escritura = m.herramienta("create_client_group").inputSchema;
     expect(lectura.properties.cuenta.enum).toEqual(DIEZ);
     expect(escritura.properties.cuenta.enum).toEqual(DIEZ);
     expect(escritura.properties.cuenta.default).toBe("cafe-04");
@@ -59,17 +59,17 @@ describe("no new variables: today's behaviour", () => {
       "Herramientas para leer y configurar las cuentas Póster POS de la red RUSH Café. " +
         "Lecturas en cualquier cuenta de la lista blanca. Escrituras: siempre primero en dry-run (confirm:false), mostrar el diff a Roy, " +
         "y solo aplicar con confirm:true tras su OK. Por defecto solo cafe-04; otra cuenta requiere permitir_otra_cuenta:true y autorización explícita. " +
-        "Productos fuera de carta se OCULTAN (ocultar_platillo); solo se borran con borrar_platillo_old si Roy lo pide para liberar lugar del plan. Platillos nuevos con receta: crear_platillo. actualizar_platillo no toca platillos con receta; permisos de puestos solo en panel web.",
+        "Productos fuera de carta se OCULTAN (hide_dish); solo se borran con delete_old_dish si Roy lo pide para liberar lugar del plan. Platillos nuevos con receta: create_dish. update_dish no toca platillos con receta; permisos de puestos solo en panel web.",
     );
-    const escritura = m.herramienta("crear_grupo_cliente").inputSchema.properties;
+    const escritura = m.herramienta("create_client_group").inputSchema.properties;
     expect(escritura.cuenta.description).toBe("Cuenta destino (por defecto cafe-04)");
     expect(escritura.permitir_otra_cuenta.description).toBe("Requerido en true para escribir en una cuenta distinta de cafe-04. Solo con autorización explícita de Roy.");
-    expect(m.herramienta("borrar_platillo_old").description).toBe(
-      'menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en "(old)" (pasaron por ocultar_platillo). ' +
+    expect(m.herramienta("delete_old_dish").description).toBe(
+      'menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en "(old)" (pasaron por hide_dish). ' +
         "Úsalo únicamente cuando Roy pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.",
     );
-    expect(m.herramienta("crear_compra").inputSchema.properties.fecha.description).toBe("YYYY-MM-DD HH:MM:SS (hora de Carmen). Por defecto ahora.");
-    expect(m.herramienta("crear_transaccion").inputSchema.properties.fecha.description).toBe("YYYY-MM-DD [HH:MM:SS], hora de Carmen (America/Merida). Por defecto ahora.");
+    expect(m.herramienta("create_supply").inputSchema.properties.fecha.description).toBe("YYYY-MM-DD HH:MM:SS (hora de Carmen). Por defecto ahora.");
+    expect(m.herramienta("create_transaction").inputSchema.properties.fecha.description).toBe("YYYY-MM-DD [HH:MM:SS], hora de Carmen (America/Merida). Por defecto ahora.");
   });
 
   it("D3 the account parameter of read tools names the network as RUSH Café (the one stated text change)", async () => {
@@ -85,9 +85,9 @@ describe("no new variables: today's behaviour", () => {
         "Para otra cuenta, Roy debe autorizarla explícitamente y la llamada debe incluir permitir_otra_cuenta: true.",
     );
     expect(() => verificarEscritura("cafe-11", true)).toThrow('Cuenta "cafe-11" fuera de la lista blanca.');
-    const cuentas = await m.cliente.callTool({ name: "listar_cuentas", arguments: {} });
+    const cuentas = await m.cliente.callTool({ name: "list_accounts", arguments: {} });
     expect(JSON.parse((cuentas.content as Array<{ text: string }>)[0].text)).toEqual(DIEZ.map((c) => ({ cuenta: c, escritura_por_defecto: c === "cafe-04" })));
-    const r = await m.cliente.callTool({ name: "crear_grupo_cliente", arguments: { nombre: "Frecuentes", tipo: "descuento", porcentaje: 10 } });
+    const r = await m.cliente.callTool({ name: "create_client_group", arguments: { nombre: "Frecuentes", tipo: "descuento", porcentaje: 10 } });
     expect(r.isError ?? false).toBe(false);
     expect(JSON.parse((r.content as Array<{ text: string }>)[0].text)).toMatchObject({ modo: "dry-run", cuenta: "cafe-04" });
     expect(m.get).toHaveBeenCalledWith("cafe-04", "clients.getGroups");

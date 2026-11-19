@@ -1,4 +1,4 @@
-// Finanzas: crear_transaccion (finance.createTransactions) — gasto, ingreso y transferencia.
+// Finanzas: create_transaction (finance.createTransactions) — gasto, ingreso y transferencia.
 import { describe, it, expect, vi } from "vitest";
 import * as W from "../src/tools/escritura.js";
 import type { PosterApi } from "../src/poster.js";
@@ -66,7 +66,7 @@ const gastoFares = (extra: Obj = {}) => ({
   ...extra,
 });
 
-describe("crear_transaccion · dry-run", () => {
+describe("create_transaction · dry-run", () => {
   it("gasto: arma el payload (type 0, account_from, amount_from en pesos) y NO escribe", async () => {
     const { api, post } = apiFinanzas();
     const r: any = await W.crearTransaccion(ctx(api), gastoFares());
@@ -103,7 +103,7 @@ describe("crear_transaccion · dry-run", () => {
   });
 });
 
-describe("crear_transaccion · validaciones", () => {
+describe("create_transaction · validaciones", () => {
   it("rechaza escribir en una cuenta no autorizada (sin permitir_otra_cuenta)", async () => {
     const { api, post } = apiFinanzas();
     await expect(
@@ -131,7 +131,7 @@ describe("crear_transaccion · validaciones", () => {
   });
 });
 
-describe("crear_transaccion · aplicar y verificar", () => {
+describe("create_transaction · aplicar y verificar", () => {
   it("escritura correcta: aplica, relee la transacción del día y verifica monto/cuenta/categoría", async () => {
     const { api, post } = apiFinanzas(100);
     const r: any = await W.crearTransaccion(ctx(api), gastoFares({ confirm: true }));

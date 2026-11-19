@@ -12,31 +12,31 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 
 | Regla | Cómo |
 |---|---|
-| Solo las cuentas de la lista blanca | `POSTER_ACCOUNTS` (cargada en `CUENTAS`, `src/config.ts`; por defecto `cafe-01` a `cafe-10`); cualquier otra se rechaza, también en lectura. Una excepción: `auditoria_reciente` devuelve el log de auditoría local de esta instancia tal como se escribió, así que puede mostrar entradas de cuentas que ya se quitaron de la lista |
+| Solo las cuentas de la lista blanca | `POSTER_ACCOUNTS` (cargada en `CUENTAS`, `src/config.ts`; por defecto `cafe-01` a `cafe-10`); cualquier otra se rechaza, también en lectura. Una excepción: `recent_audit` devuelve el log de auditoría local de esta instancia tal como se escribió, así que puede mostrar entradas de cuentas que ya se quitaron de la lista |
 | Escritura limitada a un conjunto de cuentas | Solo las cuentas de `WRITE_DEFAULT_ACCOUNTS` (por defecto `cafe-04` mientras `POSTER_ACCOUNTS` no esté definida, si no vacía; puede dejarse vacía) se escriben por defecto. Otra cuenta exige `permitir_otra_cuenta: true` **en esa llamada** (y la autorización de `OWNER_NAME`) |
 | Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin tocar Póster |
 | Aplicar = `confirm: true` | escribe una sola vez (sin reintentos, para no duplicar) y **lee de vuelta** para verificar |
 | Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`). Una escritura cuyo intento HTTP falló una vez iniciado (error de red, timeout, respuesta que no es JSON o estado HTTP 5xx) queda como `desconocido`: puede haberse aplicado, así que se verifica con una lectura antes de reintentar. Una escritura aplicada que no se pudo releer queda como `aplicado`, con `verificacion.ok: false` y un aviso de no repetirla |
 | Tokens nunca visibles | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`; se redactan de errores y auditoría; no hay herramienta que los devuelva |
-| Fuera de carta = ocultar | `actualizar_platillo` con `visible: false`; no existe herramienta de borrado |
+| Fuera de carta = ocultar | `update_dish` con `visible: false`; no existe herramienta de borrado |
 
 ## Herramientas
 
-**Lectura** (cualquier cuenta de la lista): `listar_cuentas`, `menu_snapshot`, `producto_detalle`, `insumos`,
-`precocinados`, `grupos_clientes`, `promociones` (vigentes = `date_end ≥ hoy` o `0000-00-00`), `empleados`
-(con puestos y secciones de acceso), `metodos_pago`, `ajustes` (`settings.getAllSettings`), `compras`,
-`compra_detalle`, `saldos`, `catalogos_base` (IDs de almacenes/proveedores/categorías para escribir),
-`poster_get` (cualquier `<modulo>.get*` crudo), `auditoria_reciente`.
+**Lectura** (cualquier cuenta de la lista): `list_accounts`, `menu_snapshot`, `product_details`, `ingredients`,
+`prepacks`, `client_groups`, `promotions` (vigentes = `date_end ≥ hoy` o `0000-00-00`), `employees`
+(con puestos y secciones de acceso), `payment_methods`, `settings` (`settings.getAllSettings`), `supplies`,
+`supply_details`, `stock_levels`, `reference_catalogs` (IDs de almacenes/proveedores/categorías para escribir),
+`poster_get` (cualquier `<modulo>.get*` crudo), `recent_audit`.
 
-**Escritura** (dry-run por defecto): `crear_grupo_cliente`, `actualizar_grupo_cliente`, `crear_insumo`,
-`crear_compra`, `actualizar_platillo` (updateDish), `actualizar_categoria` (updateCategory),
-`actualizar_precocinado` (updatePrepack), `crear_categoria` (createCategory), `crear_precocinado` (createPrepack),
-`crear_platillo` (createDish con receta y grupos; relee y verifica), `ocultar_platillo` (getProduct + updateDish COMPLETO con receta, visible 0 y sufijo " (old)"),
-`crear_transaccion` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, al revés que el resto de la API—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories` y tras aplicar relee `finance.getTransactions` avisando si el monto quedó 100× desviado),
-`crear_compra` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
-`asignar_pago_compra` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que el total y los renglones no cambiaron).
+**Escritura** (dry-run por defecto): `create_client_group`, `update_client_group`, `create_ingredient`,
+`create_supply`, `update_dish` (updateDish), `update_category` (updateCategory),
+`update_prepack` (updatePrepack), `create_category` (createCategory), `create_prepack` (createPrepack),
+`create_dish` (createDish con receta y grupos; relee y verifica), `hide_dish` (getProduct + updateDish COMPLETO con receta, visible 0 y sufijo " (old)"),
+`create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, al revés que el resto de la API—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories` y tras aplicar relee `finance.getTransactions` avisando si el monto quedó 100× desviado),
+`create_supply` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
+`assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que el total y los renglones no cambiaron).
 
-**Solo panel web**: editar la receta de un platillo existente (actualizar_platillo rechaza platillos con receta) y permisos de puestos.
+**Solo panel web**: editar la receta de un platillo existente (update_dish rechaza platillos con receta) y permisos de puestos.
 
 ## Contratos de Póster (aprendidos en la migración de la 47)
 
@@ -46,7 +46,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 - `menu.updateDish` es update **COMPLETO**: hay que reenviar nombre, categoría, workshop, color, `price`, `visible`,
   `modificationgroup` y `"ingredient[]": []`. Omitir `price`/`"ingredient[]"` da `Bad price value` / `Bad ingredient value`.
 - **updateDish BORRA la receta** del platillo (la API descarta recetas de platillos en silencio). Guarda:
-  *si el platillo tiene `ingredients` → no se toca* (`actualizar_platillo` lo rechaza y manda al panel).
+  *si el platillo tiene `ingredients` → no se toca* (`update_dish` lo rechaza y manda al panel).
 - `price` y `visible` son mapas por spot: `{"1": 2500}`, `{"1": 1}`. El precio del **platillo** se lee y escribe en **centavos**.
 - Precio de **opción** de modificador: se **escribe en centavos** (2000) y se **lee en pesos** (20).
 - Visibilidad en terminal = `spots[].visible`. El `hidden` de `getProducts` es otro flag: no derivar `visible` de `hidden`.
@@ -70,9 +70,9 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
   ⚠ **Sin verificar con compra real**: si `sum` va en centavos o pesos. El servidor envía **centavos por unidad** (lo que
   asumían los probes) y tras aplicar compara el total leído con el esperado; si no cuadra, lo marca con `alerta`.
 - `storage.getStorageLeftovers.prime_cost` en centavos; **`menu.getIngredients.prime_cost` viene ×10 000** (1040000 = $104),
-  por eso `insumos` toma el costo de los saldos.
+  por eso `ingredients` toma el costo de los saldos.
 
-**Finanzas** (`crear_transaccion`)
+**Finanzas** (`create_transaction`)
 - `finance.createTransactions`: `type` 0 gasto · 1 ingreso · 2 transferencia. Gasto usa `account_from`/`amount_from`;
   ingreso `account_to`/`amount_to`; transferencia ambos pares (`account_from`→`account_to`). `category_id` solo en gasto/ingreso.
 - ⚠ **Unidad sin confirmar al escribir**: al LEER (`finance.getTransactions`) los montos vienen en **centavos**; no está
@@ -83,7 +83,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 **Compras y su pago**
 - El **número de compra = `supply_id`** del almacén. `storage.getSupply`/`getSupplies` traen `account_id` = la cuenta que pagó; **`account_id` vacío `""` = a crédito (sin pagar)**. El detalle (`getSupply`) viene en **pesos**; la lista (`getSupplies`) en **centavos**.
 - Al fijar `account_id` a una compra, Póster **autogenera** la transacción de Finanzas (type 0, categoría Compras) **ligada por `binding_type 12` + `binding_id = supply_id`**, con `recipient_type 12`/`recipient_id = supplier_id`.
-- `asignar_pago_compra` = `storage.updateSupply` (update COMPLETO: relee y reenvía la compra cambiando solo `account_id`). ⚠ **Contrato de updateSupply sin verificar en vivo**: tras aplicar se relee y se compara total y # de renglones; si algo cambió, se marca para corregir en el panel.
+- `assign_supply_payment` = `storage.updateSupply` (update COMPLETO: relee y reenvía la compra cambiando solo `account_id`). ⚠ **Contrato de updateSupply sin verificar en vivo**: tras aplicar se relee y se compara total y # de renglones; si algo cambió, se marca para corregir en el panel.
 
 **Otros**: grupos de clientes `loyalty_type` 1 = puntos, 2 = descuento; métodos de pago = `settings.getPaymentMethods`
 (no `finance.*`); promociones = `clients.getPromotions`.
@@ -176,10 +176,10 @@ proveedores. `vitest.config.ts` fija `WRITE_DEFAULT_ACCOUNTS=cafe-04` por encima
 `cafe-04` es la única cuenta que se escribe por defecto, y con un `POSTER_ACCOUNTS` que no incluya `cafe-04` la
 configuración no carga y la suite falla. `cafe-01` debe estar en la lista, y la prueba espera que se bloquee sin
 `permitir_otra_cuenta`.
-Cubre `menu_snapshot`, `producto_detalle`, `insumos`, `precocinados`, `grupos_clientes`, `promociones`, `empleados`,
-`metodos_pago`, `ajustes`, `compras`, `compra_detalle`, `saldos`, `catalogos_base` y `poster_get`, y el dry-run de
-`actualizar_platillo`, `actualizar_categoria`, `actualizar_precocinado`, `crear_insumo`, `crear_compra`,
-`crear_grupo_cliente` y, si la cuenta tiene algún grupo, `actualizar_grupo_cliente`.
+Cubre `menu_snapshot`, `product_details`, `ingredients`, `prepacks`, `client_groups`, `promotions`, `employees`,
+`payment_methods`, `settings`, `supplies`, `supply_details`, `stock_levels`, `reference_catalogs` y `poster_get`, y el dry-run de
+`update_dish`, `update_category`, `update_prepack`, `create_ingredient`, `create_supply`,
+`create_client_group` y, si la cuenta tiene algún grupo, `update_client_group`.
 
 ## Autenticación
 

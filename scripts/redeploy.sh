@@ -12,5 +12,5 @@ echo "▶ Health"; curl -s "$URL/health"; echo
 B=$(gcloud secrets versions access latest --secret=poster-mcp-bearer --project=$PROJECT)
 echo "▶ Herramientas nuevas en tools/list:"
 curl -s "$URL/mcp" -H "authorization: Bearer $B" -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -o '"name":"\(crear_categoria\|crear_precocinado\|crear_platillo\|ocultar_platillo\|borrar_platillo_old\|actualizar_receta_platillo\|crear_transaccion\|asignar_pago_compra\)"' | sort -u
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -o '"name":"\(create_category\|create_prepack\|create_dish\|hide_dish\|delete_old_dish\|update_dish_recipe\|create_transaction\|assign_supply_payment\)"' | sort -u
 echo "✓ LISTO"

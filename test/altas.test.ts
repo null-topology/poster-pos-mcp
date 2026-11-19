@@ -1,4 +1,4 @@
-// Altas de menú: crear_categoria, crear_precocinado, crear_platillo, ocultar_platillo.
+// Altas de menú: create_category, create_prepack, create_dish, hide_dish.
 import { describe, it, expect, vi } from "vitest";
 import * as W from "../src/tools/escritura.js";
 import type { PosterApi } from "../src/poster.js";
@@ -94,7 +94,7 @@ const latte = (extra: Obj = {}) => ({
   ...extra,
 });
 
-describe("crear_categoria", () => {
+describe("create_category", () => {
   it("rechaza duplicado normalizado", async () => {
     const { api } = apiConEstado(base());
     await expect(W.crearCategoria(ctx(api), { cuenta: "cafe-04", nombre: "bebida de temporada" })).rejects.toThrow(/Ya existe/);
@@ -116,7 +116,7 @@ describe("crear_categoria", () => {
   });
 });
 
-describe("crear_precocinado", () => {
+describe("create_prepack", () => {
   it("valida IDs por tipo (2 existe como insumo pero no como precocinado 783)", async () => {
     const { api } = apiConEstado(base());
     await expect(W.crearPrecocinado(ctx(api), { cuenta: "cafe-04", nombre: "Té de durazno listo", receta: [{ ingredient_id: 783, tipo: 2, brutto: 5 }] })).rejects.toThrow(/Precocinado 783 no existe/);
@@ -134,7 +134,7 @@ describe("crear_precocinado", () => {
   });
 });
 
-describe("crear_platillo", () => {
+describe("create_dish", () => {
   it("dry-run: precio y opciones en centavos, leche obligatoria, nada se escribe", async () => {
     const { api, post } = apiConEstado(base());
     const r: any = await W.crearPlatillo(ctx(api), latte());
@@ -185,7 +185,7 @@ describe("crear_platillo", () => {
   });
 });
 
-describe("ocultar_platillo", () => {
+describe("hide_dish", () => {
   it("dry-run: payload COMPLETO con receta, IDs de grupos/opciones, visible 0 y sufijo", async () => {
     const { api, post } = apiConEstado(base());
     const r: any = await W.ocultarPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 892 });
@@ -232,7 +232,7 @@ describe("ocultar_platillo", () => {
   });
 });
 
-describe("borrar_platillo_old", () => {
+describe("delete_old_dish", () => {
   const old = () => ({ ...psl(), product_name: "Pumpkin Spice Latte CH (old)", spots: [{ spot_id: "1", visible: "0" }] });
   it("rechaza visibles o sin sufijo (old)", async () => {
     const { api, post } = apiConEstado(base());
@@ -259,7 +259,7 @@ describe("borrar_platillo_old", () => {
   });
 });
 
-describe("actualizar_receta_platillo + opciones platillo (Servicio estilo 47)", () => {
+describe("update_dish_recipe + opciones platillo (Servicio estilo 47)", () => {
   const auxLlevar = { product_id: "357", product_name: "Para llevar caliente 12 oz", type: "2", price: { "1": "0" }, spots: [{ spot_id: "1", visible: "1" }], group_modifications: [], ingredients: [{ ingredient_id: "14", structure_type: "1", structure_brutto: 1 }] };
   const auxTaza = { product_id: "358", product_name: "En taza (cerámica)", type: "2", price: { "1": "0" }, spots: [{ spot_id: "1", visible: "0" }], group_modifications: [], ingredients: [] };
   const servicio = { nombre: "Servicio", tipo: 1 as const, min: 1, max: 1, opciones: [
@@ -291,7 +291,7 @@ describe("actualizar_receta_platillo + opciones platillo (Servicio estilo 47)", 
     expect(r.modo).toBe("aplicado");
     expect(r.verificacion.ok).toBe(true);
   });
-  it("crear_platillo acepta opciones tipo platillo", async () => {
+  it("create_dish acepta opciones tipo platillo", async () => {
     const { api } = apiConEstado(conAux());
     const r: any = await W.crearPlatillo(ctx(api), { ...latte(), grupos: [...latte().grupos, servicio] });
     expect(r.payload.modificationgroup[1].modifications[1]).toEqual({ ingredientId: 357, type: 2, name: "Para llevar 12 oz", brutto: 1, price: 0 });

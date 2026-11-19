@@ -41,7 +41,7 @@ const CON_GSM: Record<string, string> = {
 const TOKEN_GSM = 'ZqAnt"ZqMed\\ZqPos:4402';
 const FRAGMENTOS = ["ZqAnt", "ZqMed", "ZqPos"];
 const GRUPO = { cuenta: "tienda-b", nombre: "Frecuentes", tipo: "descuento" as const, porcentaje: 10 };
-const EVENTO = { actor: "prueba", cuenta: "tienda-b", metodo: "clients.createGroup", herramienta: "crear_grupo_cliente" };
+const EVENTO = { actor: "prueba", cuenta: "tienda-b", metodo: "clients.createGroup", herramienta: "create_client_group" };
 
 const temporales: string[] = [];
 
@@ -155,7 +155,7 @@ describe("write outcome", () => {
       return json(++lecturas === 1 ? { response: [] } : { error: 3, message: "lectura no disponible" });
     });
     const llamar = await conectar(M);
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(posts()).toBe(1);
     expect(r.isError).toBe(false);
     const resultado = JSON.parse(r.texto);
@@ -177,7 +177,7 @@ describe("write outcome", () => {
     const { M, archivo, salida } = await cargar(CON_ENV);
     const { posts } = falsearFetch((_url, init) => (init?.method === "POST" ? fallar() : json({ response: [] })));
     const llamar = await conectar(M);
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(posts()).toBe(1);
     expect(r.isError).toBe(true);
     expect(r.texto).toMatch(/puede haberse aplicado/);
@@ -196,7 +196,7 @@ describe("write outcome", () => {
     const { M, W, P, archivo } = await cargar(CON_GSM, new Error("Secret Manager no disponible"));
     const { f } = falsearFetch(() => json({ response: [] }));
     const llamar = await conectar(M);
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(r.isError).toBe(true);
     expect(r.texto).toContain("Secret Manager no disponible");
     expect(r.texto).not.toMatch(/puede haberse aplicado/);
@@ -359,11 +359,11 @@ describe("redaction", () => {
     expect(T.redactar(`a ${encodeURIComponent(TOKEN_B)} b`)).toBe("a *** b");
   });
 
-  it('W16 a cached Secret Manager token with " and \\ echoed in the Poster error of a write call is absent from the client result, stdout, the JSONL line and auditoria_reciente', async () => {
+  it('W16 a cached Secret Manager token with " and \\ echoed in the Poster error of a write call is absent from the client result, stdout, the JSONL line and recent_audit', async () => {
     const { M, archivo, salida } = await cargar(CON_GSM, TOKEN_GSM);
     const { posts } = falsearFetch((_url, init) => json(init?.method === "POST" ? { error: 10, message: `Token ${TOKEN_GSM} no válido` } : { response: [] }));
     const llamar = await conectar(M);
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(posts()).toBe(1);
     expect(r.isError).toBe(false);
     const resultado = JSON.parse(r.texto);
@@ -374,14 +374,14 @@ describe("redaction", () => {
     expect(modos(lineas)).toEqual(["rechazado"]);
     expect(JSON.parse(lineas[0]).resultado).toEqual({ error: 10, message: "Token *** no válido" });
     expect(fuera).toHaveLength(1);
-    const reciente = await llamar("auditoria_reciente", { limite: 5 });
+    const reciente = await llamar("recent_audit", { limite: 5 });
     expect(reciente.isError).toBe(false);
     expect(JSON.parse(reciente.texto)).toHaveLength(1);
     const salidas: Array<[string, string]> = [
       ["client result", r.texto],
       ["JSONL", lineas[0]],
       ["stdout", fuera[0]],
-      ["auditoria_reciente", reciente.texto],
+      ["recent_audit", reciente.texto],
     ];
     for (const [donde, texto] of salidas) for (const f of FRAGMENTOS) expect(texto, `${donde}: ${f}`).not.toContain(f);
   });
@@ -436,7 +436,7 @@ describe("redaction", () => {
     const { M } = await cargar(CON_ENV);
     falsearFetch((_url, init) => json(init?.method === "POST" ? { success: 0, detail: TOKEN_B } : { response: [] }));
     const llamar = await conectar(M);
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const r = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(r.isError).toBe(false);
     const resultado = JSON.parse(r.texto);
     expect(resultado.modo).toBe("rechazado");
@@ -464,7 +464,7 @@ describe("redaction", () => {
       return json({ response: [++lecturas === 1 ? { ...fila, client_groups_name: "Viejo" } : releida] });
     });
     const llamar = await conectar(M);
-    const r = await llamar("actualizar_grupo_cliente", { cuenta: "tienda-b", client_groups_id: 77, nombre: "Frecuentes", porcentaje: 10, confirm: true });
+    const r = await llamar("update_client_group", { cuenta: "tienda-b", client_groups_id: 77, nombre: "Frecuentes", porcentaje: 10, confirm: true });
     expect(r.isError).toBe(false);
     const resultado = JSON.parse(r.texto);
     expect(resultado.modo).toBe("aplicado");
@@ -489,19 +489,19 @@ describe("redaction", () => {
     }
   });
 
-  it('W24 a tool result holding token=abc"x\\ stays valid JSON once redacted: the dry-run result and auditoria_reciente', async () => {
+  it('W24 a tool result holding token=abc"x\\ stays valid JSON once redacted: the dry-run result and recent_audit', async () => {
     const { M } = await cargar(CON_ENV);
     falsearFetch(() => json({ response: [] }));
     const llamar = await conectar(M);
     const nombre = 'ver token=abc"x\\ luego \\" fin';
     const redactado = 'ver token=***"x\\ luego \\" fin';
-    const r = await llamar("crear_grupo_cliente", { ...GRUPO, nombre });
+    const r = await llamar("create_client_group", { ...GRUPO, nombre });
     expect(r.isError).toBe(false);
-    const reciente = await llamar("auditoria_reciente", { limite: 5 });
+    const reciente = await llamar("recent_audit", { limite: 5 });
     expect(reciente.isError).toBe(false);
     const salidas: Array<[string, string]> = [
       ["dry-run", r.texto],
-      ["auditoria_reciente", reciente.texto],
+      ["recent_audit", reciente.texto],
     ];
     for (const [donde, texto] of salidas) {
       expect(() => JSON.parse(texto), donde).not.toThrow();
@@ -518,7 +518,7 @@ describe("write outcome: server errors, read-back calls and failures before the 
     const caido = () => new Response(JSON.stringify({ response: 77 }), { status: 503 });
     const { posts } = falsearFetch((url, init) => (init?.method === "POST" || url.includes("clients.getClients") ? caido() : json({ response: [] })));
     const llamar = await conectar(M);
-    const w = await llamar("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const w = await llamar("create_client_group", { ...GRUPO, confirm: true });
     expect(posts()).toBe(1);
     expect(w.isError).toBe(true);
     expect(w.texto).toMatch(/puede haberse aplicado/);
@@ -603,19 +603,19 @@ describe("audit lines: severity, malformed events and corrupt files", () => {
       expect(Object.keys(ev).sort()).toEqual(["cuenta", "error", "herramienta", "modo", "ts"]);
       expect(ev.error).toMatch(/incompleta/);
     }
-    expect(lineas[0]).toMatchObject({ cuenta: "tienda-b", herramienta: "crear_grupo_cliente", modo: "dry-run" });
-    expect(lineas[1]).toMatchObject({ cuenta: "?", herramienta: "crear_grupo_cliente", modo: "dry-run" });
+    expect(lineas[0]).toMatchObject({ cuenta: "tienda-b", herramienta: "create_client_group", modo: "dry-run" });
+    expect(lineas[1]).toMatchObject({ cuenta: "?", herramienta: "create_client_group", modo: "dry-run" });
     expect(salida().map((l) => JSON.parse(l).audit)).toEqual([true, true]);
   });
 
-  it("W31 auditoria_reciente skips an audit line that does not parse", async () => {
+  it("W31 recent_audit skips an audit line that does not parse", async () => {
     const { A, M } = await cargar(CON_ENV);
     A.auditar({ ...EVENTO, modo: "dry-run", payload: { n: 1 } });
     const dir = process.env.AUDIT_DIR ?? "";
     const [diario] = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
     appendFileSync(path.join(dir, diario), '{"ts":"2026-01-01T00:00:00.000Z","modo":\n');
     A.auditar({ ...EVENTO, modo: "aplicado", payload: { n: 2 } });
-    const r = await (await conectar(M))("auditoria_reciente", { limite: 10 });
+    const r = await (await conectar(M))("recent_audit", { limite: 10 });
     expect(r.isError).toBe(false);
     expect(JSON.parse(r.texto).map((e: Obj) => [e.modo, e.payload.n])).toEqual([
       ["aplicado", 2],
@@ -721,7 +721,7 @@ describe("redaction: structural results, clipped texts and parse failures", () =
     const { M, P, archivo, salida } = await cargar(CON_ENV);
     const roto = `{"a": ${TOKEN_A}}`;
     falsearFetch((_url, init) => (init?.method === "POST" ? new Response(roto) : json({ response: [] })));
-    const w = await (await conectar(M))("crear_grupo_cliente", { ...GRUPO, confirm: true });
+    const w = await (await conectar(M))("create_client_group", { ...GRUPO, confirm: true });
     expect(w.isError).toBe(true);
     expect(w.texto).toMatch(/puede haberse aplicado/);
     expect(w.texto).toContain("HTTP 200");

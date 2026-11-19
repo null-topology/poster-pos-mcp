@@ -10,7 +10,7 @@ Letting an LLM write to a production POS is risky. The server enforces the safet
 
 | Rule | How it's enforced |
 |---|---|
-| Account allow-list | Only accounts in `POSTER_ACCOUNTS` (loaded into `CUENTAS` in `src/config.ts`; default `cafe-01` to `cafe-10`) can be touched, including for reads. One exception: `auditoria_reciente` returns this instance's local audit log as written, so it can show entries for accounts since removed from the list |
+| Account allow-list | Only accounts in `POSTER_ACCOUNTS` (loaded into `CUENTAS` in `src/config.ts`; default `cafe-01` to `cafe-10`) can be touched, including for reads. One exception: `recent_audit` returns this instance's local audit log as written, so it can show entries for accounts since removed from the list |
 | Writes limited to a permission set | Only the accounts in `WRITE_DEFAULT_ACCOUNTS` (default `cafe-04` while `POSTER_ACCOUNTS` is unset, empty otherwise; may be set empty) are writable by default. Any other account needs an explicit `permitir_otra_cuenta: true` on that call |
 | **Dry-run by default** | Every write with `confirm: false` returns the diff, warnings and the exact payload without touching Poster |
 | Apply once, then verify | `confirm: true` writes once (no retries, to avoid duplicates) and **reads back** to verify |

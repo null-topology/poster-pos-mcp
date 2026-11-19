@@ -63,7 +63,7 @@ describe("custom configuration through the MCP server", () => {
   it("M1 tools/list shows the custom list as the cuenta enum of a read and a write tool, and the custom write target as default", async () => {
     const m = await conectar(PERSONALIZADA);
     const lectura = m.herramienta("menu_snapshot").inputSchema;
-    const escritura = m.herramienta("crear_grupo_cliente").inputSchema;
+    const escritura = m.herramienta("create_client_group").inputSchema;
     expect(lectura.properties.cuenta.enum).toEqual(LISTA);
     expect(lectura.required).toContain("cuenta");
     expect(escritura.properties.cuenta.enum).toEqual(LISTA);
@@ -80,17 +80,17 @@ describe("custom configuration through the MCP server", () => {
     expect(instrucciones).toContain("de la red Tacos Norte.");
     expect(instrucciones).toContain("mostrar el diff a Ana,");
     expect(instrucciones).toContain("si Ana lo pide");
-    expect(m.herramienta("crear_grupo_cliente").inputSchema.properties.permitir_otra_cuenta.description).toContain("autorización explícita de Ana.");
-    expect(m.herramienta("borrar_platillo_old").description).toContain("cuando Ana pida borrar");
-    expect(m.herramienta("crear_compra").inputSchema.properties.fecha.description).toContain("Asia/Tokyo");
-    expect(m.herramienta("crear_transaccion").inputSchema.properties.fecha.description).toContain("Asia/Tokyo");
+    expect(m.herramienta("create_client_group").inputSchema.properties.permitir_otra_cuenta.description).toContain("autorización explícita de Ana.");
+    expect(m.herramienta("delete_old_dish").description).toContain("cuando Ana pida borrar");
+    expect(m.herramienta("create_supply").inputSchema.properties.fecha.description).toContain("Asia/Tokyo");
+    expect(m.herramienta("create_transaction").inputSchema.properties.fecha.description).toContain("Asia/Tokyo");
     const todo = `${m.cliente.getServerVersion()?.name}\n${instrucciones}\n${JSON.stringify(m.tools)}`;
     expect(todo).not.toMatch(/Roy|RUSH|cafe-0|Carmen|America\/Merida|poster-rush/);
   });
 
   it("M3 tools/call of a write tool with cuenta omitted runs its dry run against the write target", async () => {
     const m = await conectar(PERSONALIZADA);
-    const r = await m.llamar("crear_grupo_cliente", GRUPO);
+    const r = await m.llamar("create_client_group", GRUPO);
     expect(r.isError, r.texto).toBe(false);
     const cuerpo = JSON.parse(r.texto);
     expect(cuerpo.modo).toBe("dry-run");
@@ -102,7 +102,7 @@ describe("custom configuration through the MCP server", () => {
   it("M4 the dry run targets DEFAULT_WRITE_ACCOUNT when WRITE_DEFAULT_ACCOUNTS lists several accounts in a different order", async () => {
     // tienda-b is the first entry neither as written nor in account-list order.
     const m = await conectar({ ...PERSONALIZADA, WRITE_DEFAULT_ACCOUNTS: "tienda-c,tienda-a,tienda-b" });
-    const r = await m.llamar("crear_grupo_cliente", GRUPO);
+    const r = await m.llamar("create_client_group", GRUPO);
     expect(r.isError, r.texto).toBe(false);
     const cuerpo = JSON.parse(r.texto);
     expect(cuerpo.modo).toBe("dry-run");
@@ -113,24 +113,24 @@ describe("custom configuration through the MCP server", () => {
   it("M5 with no write target, cuenta is required and the same call fails validation", async () => {
     const { DEFAULT_WRITE_ACCOUNT: _sin, ...sinDestino } = PERSONALIZADA;
     const m = await conectar({ ...sinDestino, WRITE_DEFAULT_ACCOUNTS: "tienda-a,tienda-b" });
-    const esquema = m.herramienta("crear_grupo_cliente").inputSchema;
+    const esquema = m.herramienta("create_client_group").inputSchema;
     expect(esquema.required).toContain("cuenta");
     expect(esquema.properties.cuenta).not.toHaveProperty("default");
     expect(esquema.properties.cuenta.enum).toEqual(LISTA);
-    const r = await m.llamar("crear_grupo_cliente", GRUPO);
+    const r = await m.llamar("create_client_group", GRUPO);
     expect(r.isError).toBe(true);
     expect(r.texto).toMatch(/Input validation error/);
     expect(r.texto).toMatch(/cuenta/);
     expect(m.get).not.toHaveBeenCalled();
     // An explicit account still works.
-    const ok = await m.llamar("crear_grupo_cliente", { ...GRUPO, cuenta: "tienda-a" });
+    const ok = await m.llamar("create_client_group", { ...GRUPO, cuenta: "tienda-a" });
     expect(ok.isError, ok.texto).toBe(false);
     expect(JSON.parse(ok.texto).cuenta).toBe("tienda-a");
   });
 
-  it("M6 listar_cuentas returns the custom list and its write permissions", async () => {
+  it("M6 list_accounts returns the custom list and its write permissions", async () => {
     const m = await conectar({ ...PERSONALIZADA, WRITE_DEFAULT_ACCOUNTS: "tienda-c,tienda-b" });
-    const r = await m.llamar("listar_cuentas", {});
+    const r = await m.llamar("list_accounts", {});
     expect(r.isError, r.texto).toBe(false);
     expect(JSON.parse(r.texto)).toEqual([
       { cuenta: "tienda-a", escritura_por_defecto: false },
@@ -141,7 +141,7 @@ describe("custom configuration through the MCP server", () => {
 
   it("M7 a write to a listed account outside WRITE_DEFAULT_ACCOUNTS without permitir_otra_cuenta is blocked, naming OWNER_NAME", async () => {
     const m = await conectar(PERSONALIZADA);
-    const r = await m.llamar("crear_grupo_cliente", { ...GRUPO, cuenta: "tienda-a" });
+    const r = await m.llamar("create_client_group", { ...GRUPO, cuenta: "tienda-a" });
     expect(r.isError).toBe(true);
     expect(r.texto).toBe(
       'Escritura en "tienda-a" bloqueada: solo tienda-b se escribe por defecto. ' +
@@ -152,7 +152,7 @@ describe("custom configuration through the MCP server", () => {
 
   it("M8 the same write with permitir_otra_cuenta: true runs its dry run", async () => {
     const m = await conectar(PERSONALIZADA);
-    const r = await m.llamar("crear_grupo_cliente", { ...GRUPO, cuenta: "tienda-a", permitir_otra_cuenta: true });
+    const r = await m.llamar("create_client_group", { ...GRUPO, cuenta: "tienda-a", permitir_otra_cuenta: true });
     expect(r.isError, r.texto).toBe(false);
     expect(JSON.parse(r.texto)).toMatchObject({ modo: "dry-run", cuenta: "tienda-a" });
   });
@@ -160,8 +160,8 @@ describe("custom configuration through the MCP server", () => {
   it("M9 an account outside the list is rejected for writes and reads", async () => {
     const m = await conectar(PERSONALIZADA);
     for (const [name, args] of [
-      ["crear_grupo_cliente", { ...GRUPO, cuenta: "cafe-04" }],
-      ["crear_grupo_cliente", { ...GRUPO, cuenta: "cafe-04", permitir_otra_cuenta: true }],
+      ["create_client_group", { ...GRUPO, cuenta: "cafe-04" }],
+      ["create_client_group", { ...GRUPO, cuenta: "cafe-04", permitir_otra_cuenta: true }],
       ["menu_snapshot", { cuenta: "cafe-04" }],
     ] as const) {
       const r = await m.llamar(name, args);
@@ -173,7 +173,7 @@ describe("custom configuration through the MCP server", () => {
 
   it("M10 with an empty permission set, the write guard says no account is writable by default", async () => {
     const m = await conectar({ ...PERSONALIZADA, WRITE_DEFAULT_ACCOUNTS: "", DEFAULT_WRITE_ACCOUNT: "" });
-    const r = await m.llamar("crear_grupo_cliente", { ...GRUPO, cuenta: "tienda-b" });
+    const r = await m.llamar("create_client_group", { ...GRUPO, cuenta: "tienda-b" });
     expect(r.isError).toBe(true);
     expect(r.texto).toMatch(/bloqueada/);
     expect(r.texto).not.toMatch(/solo\s+se escribe/);
@@ -188,7 +188,7 @@ describe("permission texts when the write target is outside the permission set",
 
   it("M11 with a multi-account set that excludes the target, the texts name exactly that set", async () => {
     const m = await conectar({ ...PERSONALIZADA, WRITE_DEFAULT_ACCOUNTS: "tienda-c,tienda-a" });
-    const esquema = m.herramienta("crear_grupo_cliente").inputSchema;
+    const esquema = m.herramienta("create_client_group").inputSchema;
     expect(m.cliente.getInstructions()).toContain(
       "y solo aplicar con confirm:true tras su OK. Por defecto solo tienda-a, tienda-c; otra cuenta requiere permitir_otra_cuenta:true y autorización explícita. Productos",
     );
@@ -198,14 +198,14 @@ describe("permission texts when the write target is outside the permission set",
     expect(esquema.properties.cuenta.default).toBe("tienda-b");
     expect(esquema.properties.cuenta.description).toBe(SIN_PERMISO);
 
-    const bloqueada = await m.llamar("crear_grupo_cliente", GRUPO);
+    const bloqueada = await m.llamar("create_client_group", GRUPO);
     expect(bloqueada.isError).toBe(true);
     expect(bloqueada.texto).toBe(
       'Escritura en "tienda-b" bloqueada: solo tienda-a, tienda-c se escribe por defecto. ' +
         "Para otra cuenta, Ana debe autorizarla explícitamente y la llamada debe incluir permitir_otra_cuenta: true.",
     );
     expect(m.get).not.toHaveBeenCalled();
-    const conPermiso = await m.llamar("crear_grupo_cliente", { ...GRUPO, permitir_otra_cuenta: true });
+    const conPermiso = await m.llamar("create_client_group", { ...GRUPO, permitir_otra_cuenta: true });
     expect(conPermiso.isError, conPermiso.texto).toBe(false);
     expect(JSON.parse(conPermiso.texto)).toMatchObject({ modo: "dry-run", cuenta: "tienda-b" });
     expect(m.get.mock.calls.map((c) => c[0])).toEqual(["tienda-b"]);
@@ -214,7 +214,7 @@ describe("permission texts when the write target is outside the permission set",
 
   it("M12 with an empty set and a write target, the texts say no account is writable by default", async () => {
     const m = await conectar({ ...PERSONALIZADA, WRITE_DEFAULT_ACCOUNTS: "" });
-    const esquema = m.herramienta("crear_grupo_cliente").inputSchema;
+    const esquema = m.herramienta("create_client_group").inputSchema;
     expect(m.cliente.getInstructions()).toContain(
       "y solo aplicar con confirm:true tras su OK. Ninguna cuenta se escribe por defecto; toda escritura requiere permitir_otra_cuenta:true y autorización explícita. Productos",
     );
@@ -224,14 +224,14 @@ describe("permission texts when the write target is outside the permission set",
     expect(esquema.properties.cuenta.default).toBe("tienda-b");
     expect(esquema.properties.cuenta.description).toBe(SIN_PERMISO);
 
-    const bloqueada = await m.llamar("crear_grupo_cliente", GRUPO);
+    const bloqueada = await m.llamar("create_client_group", GRUPO);
     expect(bloqueada.isError).toBe(true);
     expect(bloqueada.texto).toBe(
       'Escritura en "tienda-b" bloqueada: ninguna cuenta se escribe por defecto. ' +
         "Para escribir en ella, Ana debe autorizarla explícitamente y la llamada debe incluir permitir_otra_cuenta: true.",
     );
     expect(m.get).not.toHaveBeenCalled();
-    const conPermiso = await m.llamar("crear_grupo_cliente", { ...GRUPO, permitir_otra_cuenta: true });
+    const conPermiso = await m.llamar("create_client_group", { ...GRUPO, permitir_otra_cuenta: true });
     expect(conPermiso.isError, conPermiso.texto).toBe(false);
     expect(JSON.parse(conPermiso.texto)).toMatchObject({ modo: "dry-run", cuenta: "tienda-b" });
     expect(m.post).not.toHaveBeenCalled();

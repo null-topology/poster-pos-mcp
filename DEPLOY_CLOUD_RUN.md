@@ -94,7 +94,7 @@ La sesión dura 30 días (refresh); luego claude.ai pide reconectar.
 ## 7. Operación
 
 - **Auditoría**: Cloud Logging → `resource.type="cloud_run_revision" resource.labels.service_name="poster-rush" jsonPayload.audit=true`.
-  (`auditoria_reciente` solo ve la instancia viva: `/tmp` en Cloud Run es efímero.)
+  (`recent_audit` solo ve la instancia viva: `/tmp` en Cloud Run es efímero.)
 - **Revocar todo acceso**: `openssl rand -hex 32 | gcloud secrets versions add poster-mcp-oauth-key --data-file=-` y redeploy.
 - **Rotar un token Póster**: actualizar `poster_accounts` y correr el script del paso 2 con `--confirm` (agrega versión; caché 10 min).
 - **Habilitar escritura por defecto en otra cuenta**: solo con decisión de Roy → `--update-env-vars WRITE_DEFAULT_ACCOUNTS=cafe-04,<cuenta>`.

@@ -266,7 +266,7 @@ so with defaults they all say "RUSH Café".
   - `tools/call` of a write tool with `cuenta` omitted runs its dry run against the write target,
     including when `WRITE_DEFAULT_ACCOUNTS` lists several accounts in a different order;
   - with no write target, the same call fails validation;
-  - `listar_cuentas` returns the custom list;
+  - `list_accounts` returns the custom list;
   - a write to a listed account outside `WRITE_DEFAULT_ACCOUNTS` without `permitir_otra_cuenta` is
     blocked; an account outside the list is rejected.
 - With no variables, `tools/list` shows the ten default accounts and `cafe-04` as write default.
@@ -384,7 +384,7 @@ Write outcome and audit:
   `aplicado` NOTICE, `desconocido` WARNING, the other modes INFO.
 - `auditar` never throws and returns nothing. If an event cannot be serialized to a JSON object,
   it logs a minimal valid line with `ts`, `herramienta`, `cuenta`, `modo` and an `error` saying
-  the audit entry is incomplete. `auditoria_reciente` skips lines that do not parse.
+  the audit entry is incomplete. `recent_audit` skips lines that do not parse.
 
 ### Unit 4 acceptance
 
@@ -402,7 +402,7 @@ With a faked Poster API, no network:
 - Redaction, each with a synthetic known token: a token that is a prefix of another known token
   and a token that contains `token=` leave no fragment; the percent-encoded and JSON-escaped forms
   are stripped; a cached GSM token containing `"` or `\` echoed in a Poster error is absent from
-  the client error, stdout, the JSONL line and `auditoria_reciente`; a token straddling the clip
+  the client error, stdout, the JSONL line and `recent_audit`; a token straddling the clip
   boundary of a Poster error leaves no prefix; a rejected write reply `{ success: 0, detail:
   <token> }` reaches the client without the token; a successful `poster_get` reply and an
   applied-write reply containing the token reach the client without it; an upstream object key
@@ -419,13 +419,77 @@ With a faked Poster API, no network:
 - A finance write whose read-back call fails returns `aplicado`, `verificacion.ok === false` and
   the notice, not "not found".
 - A failure before sending with a built plan logs the plan's method and payload; a corrupt line in
-  the audit file is skipped by `auditoria_reciente`; a `desconocido` stdout line has severity
+  the audit file is skipped by `recent_audit`; a `desconocido` stdout line has severity
   WARNING.
 - Existing write and audit tests pass; `tsc` and the wider check are clean.
 
+## Unit 5: English tool names
+
+The 31 MCP tools get English names. Only the names change; descriptions, parameter names,
+instructions and result fields stay as they are.
+
+| Old | New |
+|---|---|
+| `listar_cuentas` | `list_accounts` |
+| `producto_detalle` | `product_details` |
+| `insumos` | `ingredients` |
+| `precocinados` | `prepacks` |
+| `grupos_clientes` | `client_groups` |
+| `promociones` | `promotions` |
+| `empleados` | `employees` |
+| `metodos_pago` | `payment_methods` |
+| `ajustes` | `settings` |
+| `compras` | `supplies` |
+| `compra_detalle` | `supply_details` |
+| `saldos` | `stock_levels` |
+| `catalogos_base` | `reference_catalogs` |
+| `auditoria_reciente` | `recent_audit` |
+| `crear_grupo_cliente` | `create_client_group` |
+| `actualizar_grupo_cliente` | `update_client_group` |
+| `crear_insumo` | `create_ingredient` |
+| `crear_compra` | `create_supply` |
+| `asignar_pago_compra` | `assign_supply_payment` |
+| `actualizar_platillo` | `update_dish` |
+| `actualizar_categoria` | `update_category` |
+| `actualizar_precocinado` | `update_prepack` |
+| `crear_categoria` | `create_category` |
+| `crear_precocinado` | `create_prepack` |
+| `crear_platillo` | `create_dish` |
+| `ocultar_platillo` | `hide_dish` |
+| `borrar_platillo_old` | `delete_old_dish` |
+| `actualizar_receta_platillo` | `update_dish_recipe` |
+| `crear_transaccion` | `create_transaction` |
+
+`menu_snapshot` and `poster_get` keep their names.
+
+- Every place that names a tool uses the new name: `registerTool` calls, the `herramienta`
+  value of audit events, tool names inside server instructions, tool descriptions, next-step hints
+  and error texts, tests, `scripts/redeploy.sh`, both READMEs, `DEPLOY_CLOUD_RUN.md`, and this
+  document.
+- Several old names are ordinary Spanish words (`insumos`, `compras`, `saldos`, `ajustes`,
+  `empleados`, `promociones`, `precocinados`). Only occurrences that refer to a tool change; the
+  same word used as plain text, a variable or a Poster field stays.
+- The old names are not kept as aliases: a client that calls an old name gets the SDK's
+  unknown-tool error. Per-tool approvals saved in a client are tied to the name and have to be
+  given again.
+- Audit lines written before the change keep the old names; `recent_audit` returns them as
+  written.
+- The `herramienta` key of audit events keeps its name.
+
+### Unit 5 acceptance
+
+- `tools/list` returns exactly the 31 new names above, with the same annotations, descriptions
+  (apart from tool names inside them) and input schemas as before.
+- Calling an old name fails; calling the new name behaves as the old one did, including the
+  audit `herramienta` value.
+- No tool-name reference to an old name remains in `src/`, `test/`, `scripts/`, the READMEs,
+  `DEPLOY_CLOUD_RUN.md` or this document, apart from the table above and the note on old audit
+  lines.
+- The suite, `tsc` and the wider check are clean.
+
 ## Exclusions and known limitations
 
-- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `borrar_platillo_old`), `poster_get`
+- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish`), `poster_get`
   method scope, refresh-token lifetime and revocation, DCR loopback redirects. These are
   known weaknesses outside this change.
 - `/health`: no change to its fields or disclosure policy beyond the service name value, the
@@ -439,7 +503,8 @@ With a faked Poster API, no network:
   the spot 1 / workshop 1 fallbacks in dish updates.
 - Internal constants stay in code: token cache TTL, fetch timeout, 60 KB truncation, rate-limit
   numbers, token lifetimes.
-- Translating Spanish texts.
+- Translating Spanish texts other than tool names: descriptions, parameter names, instructions,
+  result fields, error texts and code identifiers stay in Spanish.
 - The project `tsc` configuration still covers only `src/`; the wider check is a one-off.
 - The order of accounts inside the `cuenta` enum of `tools/list` is not part of the contract (zod
   lists numeric-looking names first); membership is.

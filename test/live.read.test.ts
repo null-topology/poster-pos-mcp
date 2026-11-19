@@ -28,7 +28,7 @@ describe.skipIf(!VIVO)("lecturas cafe-04", () => {
     const americano = (await L.menuSnapshot(soloLectura, { cuenta: C, buscar: "americano" })).productos;
     expect(americano.length).toBeGreaterThan(0);
   });
-  it("producto_detalle con grupos y precio de opción en pesos", async () => {
+  it("product_details con grupos y precio de opción en pesos", async () => {
     const snap = await L.menuSnapshot(soloLectura, { cuenta: C, limite: 500 });
     const conGrupos = snap.productos.find((p) => p.grupos > 0)!;
     const d = await L.productoDetalle(soloLectura, { cuenta: C, product_id: conGrupos.id });
@@ -74,20 +74,20 @@ describe.skipIf(!VIVO)("lecturas cafe-04", () => {
 });
 
 describe.skipIf(!VIVO)("dry-run de escrituras en cafe-04 (sin aplicar)", () => {
-  it("actualizar_platillo: ocultar un platillo sin receta", async () => {
+  it("update_dish: ocultar un platillo sin receta", async () => {
     const snap = await L.menuSnapshot(soloLectura, { cuenta: C, limite: 500 });
     const p = snap.productos.find((x) => x.tipo === 2 && x.receta_lineas === 0 && x.visible)!;
     const r: any = await W.actualizarPlatillo(ctx, { cuenta: C, product_id: p.id, visible: false });
     expect(r.modo).toBe("dry-run");
     expect(r.cambios.every((c: any) => c.campo.startsWith("visible."))).toBe(true);
   });
-  it("actualizar_platillo rechaza platillo con receta", async () => {
+  it("update_dish rechaza platillo con receta", async () => {
     const snap = await L.menuSnapshot(soloLectura, { cuenta: C, limite: 500 });
     const p = snap.productos.find((x) => x.tipo === 2 && x.receta_lineas > 0);
     if (!p) return;
     await expect(W.actualizarPlatillo(ctx, { cuenta: C, product_id: p.id, visible: false })).rejects.toThrow(/tiene receta/);
   });
-  it("actualizar_categoria, actualizar_precocinado (sin cambios = diff vacío)", async () => {
+  it("update_category, update_prepack (sin cambios = diff vacío)", async () => {
     const snap = await L.menuSnapshot(soloLectura, { cuenta: C });
     const cat: any = await W.actualizarCategoria(ctx, { cuenta: C, category_id: snap.categorias[0].id, nombre: `${snap.categorias[0].nombre} (prueba)` });
     expect(cat.cambios).toHaveLength(1);
@@ -96,7 +96,7 @@ describe.skipIf(!VIVO)("dry-run de escrituras en cafe-04 (sin aplicar)", () => {
     expect(r.cambios).toEqual([]);
     expect(r.payload.ingredient.every((l: any) => typeof l.id === "number" && ["g", "ml", "p"].includes(l.unit))).toBe(true);
   });
-  it("crear_insumo, crear_compra y grupos de clientes", async () => {
+  it("create_ingredient, create_supply y grupos de clientes", async () => {
     const b = await L.catalogosBase(soloLectura, { cuenta: C });
     const ins: any = await W.crearInsumo(ctx, { cuenta: C, nombre: `zz prueba mcp ${Date.now()}`, categoria_id: b.categorias_insumos[0].id, unidad: "kg" });
     expect(ins.modo).toBe("dry-run");

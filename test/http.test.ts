@@ -33,7 +33,7 @@ describe("auth del MCP", () => {
     expect(r.status).toBe(200);
     const j: any = await r.json();
     const nombres = j.result.tools.map((t: any) => t.name);
-    expect(nombres).toEqual(expect.arrayContaining(["menu_snapshot", "compras", "saldos", "actualizar_platillo", "crear_compra", "actualizar_precocinado", "crear_categoria", "crear_precocinado", "crear_platillo", "ocultar_platillo", "borrar_platillo_old", "actualizar_receta_platillo"]));
+    expect(nombres).toEqual(expect.arrayContaining(["menu_snapshot", "supplies", "stock_levels", "update_dish", "create_supply", "update_prepack", "create_category", "create_prepack", "create_dish", "hide_dish", "delete_old_dish", "update_dish_recipe"]));
   });
 
   it("OAuth completo con PKCE", async () => {
