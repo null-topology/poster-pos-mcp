@@ -57,7 +57,7 @@ const envolver = <A>(fn: (a: A, extra: any) => Promise<unknown>) => async (a: A,
 };
 
 export function crearServidorMcp(api: PosterApi = posterHttp) {
-  const s = new McpServer({ name: config.serviceName, version: "0.4.0" }, {
+  const s = new McpServer({ name: config.serviceName, version: "0.5.0" }, {
     instructions:
       `Herramientas para leer y configurar las cuentas Póster POS de la red ${networkName}. ` +
       `Lecturas en cualquier cuenta de la lista blanca. Escrituras: siempre primero en dry-run (confirm:false), mostrar el diff a ${ownerName}, ` +
