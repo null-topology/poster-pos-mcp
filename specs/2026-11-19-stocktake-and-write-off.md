@@ -11,11 +11,11 @@ Give the model what Poster's public API allows for stocktakes, and a way to reco
 
 Poster's public API (v3) has no method that creates, fills or conducts a stocktake. The documented storage methods for stocktakes are read-only: `storage.getStorageInventories` and `storage.getInventoryIngredients`. A stocktake is created and conducted in Poster itself (back office or POS app); the server reads the result. A difference found outside Poster can be recorded as a write-off, which Poster will not show as a stocktake.
 
-## Poster contract (from the public docs, not confirmed on a live account)
+## Poster contract (from the public docs; only the unit of the stocktake total is confirmed on a live account)
 
-- `storage.getStorageInventories` (GET, `storage_id` required): array of `inventory_id`, `storage_id`, `date_start`, `date_end`, `date_set` (backdating; `0000-00-00 00:00:00` when unset), `date_inventory` (same zero value when unset), `sum` and `sum_netto` (kopecks), `inventory_status` (`1` conducted, `0` not). The parameter table spells some fields `data_*`; read `date_*` and fall back to `data_*`.
+- `storage.getStorageInventories` (GET, `storage_id` required): array of `inventory_id`, `storage_id`, `date_start`, `date_end`, `date_set` (backdating; `0000-00-00 00:00:00` when unset), `date_inventory` (same zero value when unset), `sum` and `sum_netto`, `inventory_status` (`1` conducted, `0` not). The docs give `sum` and `sum_netto` in kopecks, but on a live account `sum` came in currency units with decimals: a stocktake Poster shows as 1 660,17 read as 16.6 once divided by 100. `sum_netto` is taken to use the same unit; that is not observed. The parameter table spells some fields `data_*`; read `date_*` and fall back to `data_*`.
 - `storage.getInventoryIngredients` (GET, `inventory_id` or `storage_id`): object with `ingredients` and `manufactures` (each an object keyed by id or an array) and `prepacks` (object or array). Ingredient and manufacture rows: `item_id`, `item`, `unit`, `estimatedrest`, `factrest`, `difference`, `diffcurrency`, `primecost` (money in currency units, not kopecks). Values not counted come as the string `''` (two single quotes) or an empty string. Prepack rows: `product_id`, `product_name`, `type` (`1` semi-finished, `2` dish), `factrest`.
-- `storage.getStorageLeftovers` (GET, `storage_id` optional, `zero_leftovers=true` includes zero stock): `ingredient_id`, `ingredient_name`, `ingredient_unit`, `ingredients_type` (`1` ingredient, `2` product or modifier), `hidden` (`1` hidden).
+- `storage.getStorageLeftovers` (GET, `storage_id` optional, `zero_leftovers=true` includes zero stock, so items without a balance in the requested storage come back too): `ingredient_id`, `ingredient_name`, `ingredient_unit`, `ingredients_type` (`1` ingredient, `2` product or modifier), `hidden` (`1` hidden), `ingredient_left` (the total of all storages), `storage_ingredient_left` (the balance of the requested storage, returned when `storage_id` is applied). `count_sheet` and `stock_levels` with `storage_id` read `storage_ingredient_left`.
 - `storage.createWriteOff` (POST): the parameter table lists flat `date` (`Y-m-d H:i:s`), `storage_id`, optional `reason_id`, and `ingredient[]` of `id`, `type` (1 product, 2 dish, 3 semi-finished, 4 ingredient, 5 modifier), `weight`, `sum` (cost per unit), optional `packing`, optional `reason` (line comment). The request example nests `storage_id` and `date` under `write_off`. Reply: `response` = write-off id.
 - `storage.getWaste` (GET, `waste_id`): `waste_id`, `total_sum` (kopecks), `storage_id`, `date`, `reason_id`, `reason_name`, `elements[]` of `type` (1 product, 2 dish, 3 semi-finished, 8 modifier, 10 ingredient), `product_id`, `modificator_id`, `count`, `ingredients[]` of `ingredient_id`, `weight`, `unit`, `cost`. The element types differ from the write types: an ingredient is written as type 4 and read as type 10.
 - `storage.getWastes` (GET, `dateFrom`/`dateTo` as `Ymd`): `waste_id`, `storage_id`, `date`, `reason_id`, `delete`.
@@ -31,7 +31,7 @@ Three read tools, registered with the read-only annotation, in `src/tools/lectur
 
 - Parameters: `cuenta`, optional `storage_id`, optional `desde` and `hasta` (`YYYY-MM-DD`, inclusive).
 - With `storage_id`: it must exist in `storage.getStorages`; otherwise an error that lists the available storages as `id=name`. Without it: every storage from `storage.getStorages`, results merged.
-- Row: `inventario_id`, `storage_id`, `almacen` (storage name), `inicio`, `fin` (each null for the zero date or an empty value), `fecha_inventario` (null for the zero date), `retroactiva` (true when `date_set` is set), `realizada` (`inventory_status` is `1`), `costo_total` (`sum` / 100), `costo_total_neto` (`sum_netto` / 100, only when present).
+- Row: `inventario_id`, `storage_id`, `almacen` (storage name), `inicio`, `fin` (each null for the zero date or an empty value), `fecha_inventario` (null for the zero date), `retroactiva` (true when `date_set` is set), `realizada` (`inventory_status` is `1`), `costo_total` (`sum` in currency units, rounded to 2 decimals, not divided by 100), `costo_total_neto` (`sum_netto` alike, only when present).
 - The date of a stocktake is `fin`, or `inicio` when `fin` is null. `desde`/`hasta` filter on the day of that date. A stocktake with neither date is kept only when neither `desde` nor `hasta` is given.
 - Sort by that date descending as a full date-time (two stocktakes of the same day keep their time order), stocktakes with neither date last, then `inventario_id` descending.
 
@@ -50,18 +50,20 @@ Three read tools, registered with the read-only annotation, in `src/tools/lectur
 
 ### `count_sheet`
 
-- Parameters: `cuenta`, `storage_id`, optional `incluir_ocultos` (default false).
+- Parameters: `cuenta`, `storage_id`, optional `incluir_ocultos` (default false), optional `include_zero` (default false).
 - `storage_id` must exist in `storage.getStorages`.
 - Calls `storage.getStorageLeftovers` with `storage_id` and `zero_leftovers=true`.
-- Response: `cuenta`, `storage_id`, `almacen`, `total`, `renglones`. Row: `id`, `nombre`, `unidad`, `tipo` (`insumo` or `producto`). No balance, cost or any other stock figure at any level: the sheet is for a blind count.
+- Response: `cuenta`, `storage_id`, `almacen`, `total`, `omitted_zero_balance`, `renglones`. Row: `id`, `nombre`, `unidad`, `tipo` (`insumo` or `producto`). No balance, cost or any other stock figure at any level: the sheet is for a blind count.
 - Hidden rows left out unless `incluir_ocultos`. Sorted by `nombre`.
+- Without `include_zero`, the sheet lists only the items whose balance in the requested storage is not zero: a row whose `storage_ingredient_left` reads as zero (`0`, `0.00000`) is left out, a negative one is kept, and a row without the field (or with a value that is not a number) is kept. The total of all storages (`ingredient_left`) is not used. With `include_zero` every row is listed.
+- `omitted_zero_balance` is the number of rows the hidden rule keeps and the zero-balance rule leaves out; it is 0 with `include_zero`.
 
 ### Acceptance
 
 - Every tool reads only (`get` calls only), carries the read-only annotation and goes through the existing account allow-list.
-- `list_stocktakes` without `storage_id` merges all storages, and the zero and empty date, backdating, status, kopeck conversion, filter and sort rules hold, including same-day ordering by time and stocktakes without `fin`; an unknown `storage_id` fails before any stocktake call.
+- `list_stocktakes` without `storage_id` merges all storages, and the zero and empty date, backdating, status, amount (currency units, 2 decimals), filter and sort rules hold, including same-day ordering by time and stocktakes without `fin`; an unknown `storage_id` fails before any stocktake call.
 - `stocktake_result` fails on a reply without any group, normalizes object and array groups, maps `''` to null, filters, sorts, limits (default 200, prepacks included) and totals as above, and gives the notice only when nothing was counted.
-- `count_sheet` output has exactly the keys above at the top and in each row, and the hidden rule holds.
+- `count_sheet` output has exactly the keys above at the top and in each row, with and without `include_zero`; the hidden rule, the zero-balance rule and `omitted_zero_balance` hold.
 
 ## Unit 2: `create_write_off`
 
@@ -118,6 +120,7 @@ A write tool in `src/tools/escritura.ts` built like `create_supply`, running onl
 - Poster does not document the sign of `diffcurrency` and `difference`. `faltante_costo` and `sobrante_costo` assume a negative value is a shortage; this is not confirmed on a live account.
 - A local `fecha` that does not exist or is ambiguous in the configured time zone (a daylight-saving change) is not detected; it is sent as given.
 - `count_sheet` accepts a deleted storage and does not leave out deleted ingredients.
+- The meaning of `storage_ingredient_left` comes from the docs and is not confirmed on a live account. If Poster leaves the field out, `count_sheet` keeps every row, items of other storages included, and `stock_levels` with `storage_id` shows the total of all storages.
 - When `storage.getWastes` fails, `create_write_off` stops before sending: the write needs the duplicate check.
 - The read-back pairs each ingredient line with its own type-10 element. The docs do not show whether Poster groups several ingredients in one element; if it does, the later ingredient lines read back as missing and the result says the write was applied but did not verify. A write-off with two different ingredient lines on a live account settles this; a single-line write-off reads back the same either way.
 - The tests check that the tool hands the write-off to the transport without the multipart option; no test checks the HTTP encoding the transport then uses for `storage.createWriteOff`. No test checks that both READMEs keep the stocktake section.

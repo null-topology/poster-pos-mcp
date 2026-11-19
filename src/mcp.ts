@@ -177,9 +177,15 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   s.registerTool("count_sheet", {
     title: "Hoja de conteo",
     description:
-      "Hoja para contar a ciegas un almacén (storage.getStorageLeftovers con existencias en cero): id, nombre, unidad y tipo, ordenados por nombre, sin existencias ni costos. " +
+      "Hoja para contar a ciegas un almacén (storage.getStorageLeftovers): id, nombre, unidad y tipo, ordenados por nombre, sin existencias ni costos. " +
+      "Lists only the items whose balance in that storage is not zero, unless include_zero is true; omitted_zero_balance counts the items left out. " +
       "Los ocultos quedan fuera salvo incluir_ocultos.",
-    inputSchema: { cuenta, storage_id: z.number().int().describe("Almacén (reference_catalogs)"), incluir_ocultos: z.boolean().optional() },
+    inputSchema: {
+      cuenta,
+      storage_id: z.number().int().describe("Almacén (reference_catalogs)"),
+      incluir_ocultos: z.boolean().optional(),
+      include_zero: z.boolean().optional().describe("Default false. true also lists the items whose balance in this storage is zero"),
+    },
     annotations: LECTURA,
   }, envolver((a) => L.hojaConteo(api, a)));
 

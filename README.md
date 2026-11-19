@@ -25,7 +25,7 @@ Letting an LLM write to a production POS is risky. Applying a write (`confirm: t
 
 ### Stocktakes
 
-The Poster API cannot create, fill in or conduct a stocktake; staff conduct it in Poster. This server lists the stocktakes, shows a stocktake's discrepancies with their cost, and prints a blind count sheet (items without balances or costs). A shortage found outside a stocktake can be recorded with `create_write_off`; Poster shows it as a write-off, not as a stocktake.
+The Poster API cannot create, fill in or conduct a stocktake; staff conduct it in Poster. This server lists the stocktakes, shows a stocktake's discrepancies with their cost, and prints a blind count sheet (items without balances or costs). By default the sheet lists only the items whose balance in that storage is not zero; `include_zero` lists every item, and `omitted_zero_balance` tells how many were left out. A shortage found outside a stocktake can be recorded with `create_write_off`; Poster shows it as a write-off, not as a stocktake.
 
 ## Stack
 

@@ -256,12 +256,15 @@ export async function saldos(api: PosterApi, a: { cuenta: string; storage_id?: n
   const params: Record<string, string | number> = {};
   if (a.storage_id) params.storage_id = a.storage_id;
   const l = await api.get<Obj[]>(a.cuenta, "storage.getStorageLeftovers", params);
+  // ingredient_left is the total of all storages. With storage_id the docs add storage_ingredient_left, the balance
+  // of that storage; a row without it falls back to the total.
+  const existencia = (x: Obj) => (a.storage_id ? (numeroONulo(x.storage_ingredient_left) ?? num(x.ingredient_left)) : num(x.ingredient_left));
   let lista = l
     .filter((x) => coincide(x.ingredient_name, a.buscar))
     .map((x) => ({
       id: num(x.ingredient_id),
       nombre: String(x.ingredient_name).trim(),
-      existencia: num(x.ingredient_left),
+      existencia: existencia(x),
       unidad: x.ingredient_unit,
       minimo: num(x.limit_value),
       costo_unitario_pesos: pesos(x.prime_cost),
@@ -340,6 +343,9 @@ export async function inventarios(api: PosterApi, a: { cuenta: string; storage_i
     const v = x.fin ?? x.inicio;
     return v === null || v === undefined ? null : String(v);
   };
+  // The docs give sum and sum_netto in kopecks, but a live account returned the total in currency units with
+  // decimals (a stocktake Poster shows as 1 660,17 came out as 16.6 once divided by 100): read as is, 2 decimals.
+  const importe = (v: unknown) => Math.round(num(v) * 100) / 100;
   const lista = porAlmacen
     .flatMap(({ s, filas }) =>
       filas.map((x) => {
@@ -353,8 +359,8 @@ export async function inventarios(api: PosterApi, a: { cuenta: string; storage_i
           fecha_inventario: sinFecha(inventario) ? null : inventario,
           retroactiva: !sinFecha(fecha(x, "set")),
           realizada: num(x.inventory_status) === 1,
-          costo_total: pesos(x.sum), // kopecks
-          ...(x.sum_netto === undefined || x.sum_netto === null ? {} : { costo_total_neto: pesos(x.sum_netto) }),
+          costo_total: importe(x.sum),
+          ...(x.sum_netto === undefined || x.sum_netto === null ? {} : { costo_total_neto: importe(x.sum_netto) }),
         };
       }),
     )
@@ -448,12 +454,16 @@ export async function inventarioResultado(
   };
 }
 
-export async function hojaConteo(api: PosterApi, a: { cuenta: string; storage_id: number; incluir_ocultos?: boolean }) {
+export async function hojaConteo(api: PosterApi, a: { cuenta: string; storage_id: number; incluir_ocultos?: boolean; include_zero?: boolean }) {
   const { almacen } = await almacenDe(api, a.cuenta, a.storage_id);
   const l = (await api.get<Obj[]>(a.cuenta, "storage.getStorageLeftovers", { storage_id: a.storage_id, zero_leftovers: "true" })) ?? [];
+  const visibles = l.filter((x) => a.incluir_ocultos === true || String(x.hidden) !== "1");
+  // zero_leftovers=true also returns items without a balance in this storage, items of other storages included.
+  // storage_ingredient_left is the balance of the requested storage (per the docs): a zero balance is left out unless
+  // include_zero, and a row without the field is kept. The balance only decides the filter; it is not shown.
+  const conSaldo = a.include_zero === true ? visibles : visibles.filter((x) => numeroONulo(x.storage_ingredient_left) !== 0);
   // A blind count sheet: no balance, cost or any other stock figure.
-  const renglones = l
-    .filter((x) => a.incluir_ocultos === true || String(x.hidden) !== "1")
+  const renglones = conSaldo
     .map((x) => ({
       id: num(x.ingredient_id),
       nombre: String(x.ingredient_name ?? "").trim(),
@@ -461,7 +471,14 @@ export async function hojaConteo(api: PosterApi, a: { cuenta: string; storage_id
       tipo: num(x.ingredients_type) === 1 ? "insumo" : num(x.ingredients_type) === 2 ? "producto" : null,
     }))
     .sort((x, y) => x.nombre.localeCompare(y.nombre, "es"));
-  return { cuenta: a.cuenta, storage_id: a.storage_id, almacen: String(almacen.storage_name ?? "").trim(), total: renglones.length, renglones };
+  return {
+    cuenta: a.cuenta,
+    storage_id: a.storage_id,
+    almacen: String(almacen.storage_name ?? "").trim(),
+    total: renglones.length,
+    omitted_zero_balance: visibles.length - conSaldo.length,
+    renglones,
+  };
 }
 
 /** Escape de solo lectura: cualquier método `<modulo>.get*` con parámetros simples. */

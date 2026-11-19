@@ -31,7 +31,10 @@ function apiFalsa(db: Obj = {}) {
   return { api: { get, post } as unknown as PosterApi, get, post };
 }
 
-/** One stocktake as `storage.getStorageInventories` documents it (money in kopecks). */
+/**
+ * One stocktake as `storage.getStorageInventories` returns it. Money is in currency units with decimals, as a
+ * live account returned it; the docs say kopecks.
+ */
 const inv = (o: Obj = {}): Obj => ({
   inventory_id: "10",
   storage_id: "1",
@@ -39,8 +42,8 @@ const inv = (o: Obj = {}): Obj => ({
   date_end: "2026-11-01 20:00:00",
   date_set: "0000-00-00 00:00:00",
   date_inventory: "2026-11-01 21:00:00",
-  sum: "123450",
-  sum_netto: "100000",
+  sum: "1234.50",
+  sum_netto: "1000.00",
   inventory_status: "1",
   ...o,
 });
@@ -91,14 +94,21 @@ describe("list_stocktakes", () => {
     expect(porId).toEqual({ 10: true, 11: false });
   });
 
-  it("ST5 sum and sum_netto are kopecks; costo_total_neto appears only when sum_netto is present", async () => {
-    const sinNeto = inv({ inventory_id: "11", sum: "5000" });
+  it("ST5 sum and sum_netto are read in currency units, not divided by 100: 1660.17 stays 1660.17", async () => {
+    const { api } = apiFalsa({ inventarios: { "1": [inv({ inventory_id: "10", sum: "1660.17", sum_netto: "1383.48" })] } });
+    const r: any = await L.inventarios(api, { cuenta: "cafe-01", storage_id: 1 });
+    expect(r.inventarios[0].costo_total).toBe(1660.17);
+    expect(r.inventarios[0].costo_total_neto).toBe(1383.48);
+  });
+
+  it("ST14 costo_total and costo_total_neto are rounded to 2 decimals; costo_total_neto appears only when sum_netto is present", async () => {
+    const sinNeto = inv({ inventory_id: "11", sum: "50" });
     delete sinNeto.sum_netto;
-    const { api } = apiFalsa({ inventarios: { "1": [inv({ inventory_id: "10", sum: "123450", sum_netto: "100000" }), sinNeto] } });
+    const { api } = apiFalsa({ inventarios: { "1": [inv({ inventory_id: "10", sum: "1660.1749", sum_netto: "12.3456" }), sinNeto] } });
     const r: any = await L.inventarios(api, { cuenta: "cafe-01", storage_id: 1 });
     const porId = Object.fromEntries(r.inventarios.map((x: Obj) => [x.inventario_id, x]));
-    expect(porId[10].costo_total).toBe(1234.5);
-    expect(porId[10].costo_total_neto).toBe(1000);
+    expect(porId[10].costo_total).toBe(1660.17);
+    expect(porId[10].costo_total_neto).toBe(12.35);
     expect(porId[11].costo_total).toBe(50);
     expect(porId[11]).not.toHaveProperty("costo_total_neto");
   });
@@ -358,6 +368,24 @@ const SALDOS = [
   { ingredient_id: "11", ingredient_name: "Leche", ingredient_unit: "l", ingredients_type: "1", hidden: "0", ingredient_left: "-2", limit_value: "3", prime_cost: "2000", storage_ingredient_sum: "-4000" },
 ];
 
+/**
+ * Leftovers of one storage read with `storage_id` and `zero_leftovers=true`: every item of the account comes back.
+ * `ingredient_left` is the total of all storages and `storage_ingredient_left` the balance of the requested storage;
+ * the two differ in every row, so a filter on the wrong field fails.
+ */
+const SALDOS_ALMACEN = [
+  { ingredient_id: "21", ingredient_name: "Jabón", ingredient_unit: "p", ingredients_type: "2", hidden: "0", ingredient_left: "8", storage_ingredient_left: "6", prime_cost: "500", storage_ingredient_sum: "3000" },
+  // An item of another storage: a non-zero total, zero here.
+  { ingredient_id: "22", ingredient_name: "Leche", ingredient_unit: "l", ingredients_type: "1", hidden: "0", ingredient_left: "12", storage_ingredient_left: "0.00000", prime_cost: "2000", storage_ingredient_sum: "0" },
+  { ingredient_id: "23", ingredient_name: "Harina", ingredient_unit: "kg", ingredients_type: "1", hidden: "0", ingredient_left: "4", storage_ingredient_left: "0", prime_cost: "1500", storage_ingredient_sum: "0" },
+  // A zero total, a negative balance here.
+  { ingredient_id: "24", ingredient_name: "Cloro", ingredient_unit: "l", ingredients_type: "2", hidden: "0", ingredient_left: "0", storage_ingredient_left: "-1.5", prime_cost: "800", storage_ingredient_sum: "-1200" },
+  // No storage_ingredient_left at all.
+  { ingredient_id: "25", ingredient_name: "Escoba", ingredient_unit: "p", ingredients_type: "2", hidden: "0", ingredient_left: "0", prime_cost: "4000", storage_ingredient_sum: "0" },
+  { ingredient_id: "26", ingredient_name: "Cera", ingredient_unit: "kg", ingredients_type: "2", hidden: "1", ingredient_left: "3", storage_ingredient_left: "0", prime_cost: "6000", storage_ingredient_sum: "0" },
+  { ingredient_id: "27", ingredient_name: "Bolsas", ingredient_unit: "p", ingredients_type: "2", hidden: "1", ingredient_left: "0", storage_ingredient_left: "40", prime_cost: "100", storage_ingredient_sum: "4000" },
+];
+
 describe("count_sheet", () => {
   it("CS1 reads storage.getStorageLeftovers with zero_leftovers and returns only id, nombre, unidad and tipo", async () => {
     const { api, get } = apiFalsa({ "storage.getStorageLeftovers": SALDOS });
@@ -397,9 +425,63 @@ describe("count_sheet", () => {
   it("CS6 the whole response carries no stock or cost field at any level: exact keys at the top and in every row", async () => {
     const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS });
     const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 1, incluir_ocultos: true });
-    expect(Object.keys(r).sort()).toEqual(["almacen", "cuenta", "renglones", "storage_id", "total"]);
-    expect(r).toMatchObject({ cuenta: "cafe-01", storage_id: 1, almacen: "Almacén central", total: 4 });
+    expect(Object.keys(r).sort()).toEqual(["almacen", "cuenta", "omitted_zero_balance", "renglones", "storage_id", "total"]);
+    expect(r).toMatchObject({ cuenta: "cafe-01", storage_id: 1, almacen: "Almacén central", total: 4, omitted_zero_balance: 0 });
     expect(r.renglones).toHaveLength(4);
+    for (const x of r.renglones) {
+      expect(Object.keys(x).sort()).toEqual(["id", "nombre", "tipo", "unidad"]);
+      for (const v of Object.values(x)) expect(v === null || typeof v !== "object").toBe(true);
+    }
+  });
+
+  it("CS7 by default a row whose storage_ingredient_left is zero ('0' or '0.00000') is left out, whatever the total ingredient_left", async () => {
+    const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2 });
+    expect(ids(r)).not.toContain(22);
+    expect(ids(r)).not.toContain(23);
+    expect(ids(r)).toContain(21);
+  });
+
+  it("CS8 by default a negative storage_ingredient_left is kept, also when the total ingredient_left is zero", async () => {
+    const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2 });
+    expect(ids(r)).toContain(24);
+  });
+
+  it("CS9 by default a row without storage_ingredient_left is kept", async () => {
+    const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2 });
+    expect(ids(r)).toContain(25);
+  });
+
+  it("CS10 omitted_zero_balance counts the rows left out for a zero balance among the rows the hidden rule keeps", async () => {
+    const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const sin: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2 });
+    expect(sin).toMatchObject({ total: 3, omitted_zero_balance: 2 });
+    expect(ids(sin)).toEqual([24, 25, 21]);
+    const con: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2, incluir_ocultos: true });
+    expect(con).toMatchObject({ total: 4, omitted_zero_balance: 3 });
+    expect(ids(con)).toEqual([27, 24, 25, 21]);
+  });
+
+  it("CS11 include_zero: true lists every row as before and leaves none out", async () => {
+    const { api, get } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2, include_zero: true });
+    expect(llamadas(get, "storage.getStorageLeftovers")).toEqual([{ storage_id: 2, zero_leftovers: "true" }]);
+    expect(r).toMatchObject({ total: 5, omitted_zero_balance: 0 });
+    expect(ids(r)).toEqual([24, 25, 23, 21, 22]);
+    const todo: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2, include_zero: true, incluir_ocultos: true });
+    expect(todo).toMatchObject({ total: 7, omitted_zero_balance: 0 });
+  });
+
+  it.each([
+    ["by default", {}],
+    ["with include_zero", { include_zero: true }],
+  ])("CS12 %s the sheet carries no balance, cost or stock figure: exact keys at the top and in every row", async (_caso, extra) => {
+    const { api } = apiFalsa({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const r: any = await L.hojaConteo(api, { cuenta: "cafe-01", storage_id: 2, incluir_ocultos: true, ...extra });
+    expect(Object.keys(r).sort()).toEqual(["almacen", "cuenta", "omitted_zero_balance", "renglones", "storage_id", "total"]);
+    expect(r.renglones.length).toBeGreaterThan(0);
     for (const x of r.renglones) {
       expect(Object.keys(x).sort()).toEqual(["id", "nombre", "tipo", "unidad"]);
       for (const v of Object.values(x)) expect(v === null || typeof v !== "object").toBe(true);
@@ -470,5 +552,15 @@ describe("stocktake tools through the MCP server", () => {
     expect(r.isError).toBe(true);
     expect(get).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
+  });
+
+  it("SM4 count_sheet takes include_zero through the server: zero balances are left out without it and listed with it", async () => {
+    const { llamar } = await cargar({ "storage.getStorageLeftovers": SALDOS_ALMACEN });
+    const sin = await llamar("count_sheet", { cuenta: "tienda-a", storage_id: 2 });
+    expect(sin.isError, sin.texto).toBe(false);
+    expect(JSON.parse(sin.texto)).toMatchObject({ total: 3, omitted_zero_balance: 2 });
+    const con = await llamar("count_sheet", { cuenta: "tienda-a", storage_id: 2, include_zero: true });
+    expect(con.isError, con.texto).toBe(false);
+    expect(JSON.parse(con.texto)).toMatchObject({ total: 5, omitted_zero_balance: 0 });
   });
 });

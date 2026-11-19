@@ -29,7 +29,7 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 (con puestos y secciones de acceso), `payment_methods`, `settings` (`settings.getAllSettings`), `supplies`,
 `supply_details`, `stock_levels`, `list_stocktakes` (inventarios por almacén con fechas, estado y costo total),
 `stocktake_result` (diferencias de un inventario, ordenadas por costo, con faltante y sobrante),
-`count_sheet` (hoja de conteo a ciegas, sin existencias ni costos),
+`count_sheet` (hoja de conteo a ciegas, sin existencias ni costos; por defecto solo los artículos cuya existencia en ese almacén no es cero, `include_zero` los lista todos),
 `reference_catalogs` (IDs de almacenes/proveedores/categorías para escribir),
 `poster_get` (cualquier `<modulo>.get*` crudo), `recent_audit`.
 
@@ -44,7 +44,7 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 `assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que quedó la cuenta, que el total no cambió (tolerancia 0.5) y que el número de renglones es el mismo; el efecto en Finanzas no se verifica),
 `create_write_off` (storage.createWriteOff en JSON, sin costo: Póster lo calcula; valida almacén, razón, artículos y que la fecha no sea futura; rechaza renglones de tipo modificador; avisa si ya hay mermas en ese almacén ese día; relee `storage.getWaste` y compara almacén, día, razón y cantidades; el contrato sigue la documentación de Póster y no está confirmado en una cuenta real).
 
-**Inventarios**: la API de Póster no permite crear, llenar ni realizar un inventario; el personal lo realiza en Póster. Este servidor lista los inventarios, muestra las diferencias de uno con su costo e imprime una hoja de conteo a ciegas. Un faltante encontrado fuera de un inventario se puede registrar con `create_write_off`; Póster lo muestra como merma, no como inventario.
+**Inventarios**: la API de Póster no permite crear, llenar ni realizar un inventario; el personal lo realiza en Póster. Este servidor lista los inventarios, muestra las diferencias de uno con su costo e imprime una hoja de conteo a ciegas. Por defecto la hoja lista solo los artículos cuya existencia en ese almacén no es cero; `include_zero` los lista todos y `omitted_zero_balance` dice cuántos quedaron fuera. Un faltante encontrado fuera de un inventario se puede registrar con `create_write_off`; Póster lo muestra como merma, no como inventario.
 
 **Solo panel web**: permisos de puestos. La receta de un platillo existente se cambia con `update_dish_recipe` (update_dish rechaza platillos con receta).
 
@@ -81,6 +81,12 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
   asumían los probes) y tras aplicar compara el total leído con el esperado; si no cuadra, lo marca con `alerta`.
 - `storage.getStorageLeftovers.prime_cost` en centavos; **`menu.getIngredients.prime_cost` viene ×10 000** (1040000 = $104),
   por eso `ingredients` toma el costo de los saldos.
+- `storage.getStorageLeftovers`: `ingredient_left` es el total de todos los almacenes; con `storage_id`, `storage_ingredient_left`
+  es la existencia de ese almacén (según la documentación, sin verificar en una cuenta real). Con `zero_leftovers=true` vienen
+  también los artículos sin existencia en ese almacén. `stock_levels` con `storage_id` y `count_sheet` usan `storage_ingredient_left`.
+- `storage.getStorageInventories`: la documentación da `sum` y `sum_netto` en centavos, pero en una cuenta real `sum` llegó en
+  **pesos con decimales** (un inventario que Póster muestra como 1 660,17 salía 16.6 al dividirlo entre 100). `list_stocktakes`
+  los lee tal cual, redondeados a 2 decimales; que `sum_netto` use la misma unidad no está verificado.
 
 **Finanzas** (`create_transaction`)
 - `finance.createTransactions`: `type` 0 gasto · 1 ingreso · 2 transferencia. Gasto usa `account_from`/`amount_from`;
