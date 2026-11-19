@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Servidor MCP remoto (Hono + Streamable HTTP, modo sin estado); su nombre viene de SERVICE_NAME.
+// With MCP_TRANSPORT=stdio it speaks MCP on stdin/stdout instead, for a client that launches the process.
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { config } from "./config.js";
 import { crearServidorMcp } from "./mcp.js";
@@ -31,7 +33,18 @@ export function crearApp() {
   return app;
 }
 
-if (process.env.VITEST === undefined) {
+/** stdio: one MCP server for the life of the process; stdout carries the protocol, so every log goes to stderr. */
+function arrancarStdio() {
+  crearServidorMcp()
+    .connect(new StdioServerTransport())
+    .then(() => console.error(`${config.serviceName} MCP por stdio · tokens=${config.tokenSource}`))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}
+
+function arrancarHttp() {
   if (!config.bearerToken && !oauthActivo()) {
     console.error("✗ Sin autenticación configurada: define MCP_BEARER_TOKEN y/o OAUTH_SIGNING_KEY + OWNER_PASSPHRASE.");
     process.exit(1);
@@ -44,4 +57,9 @@ if (process.env.VITEST === undefined) {
     console.error(e.code === "EADDRINUSE" ? `✗ Puerto ${config.port} ocupado. Revisa: dev doctor` : e);
     process.exit(1);
   });
+}
+
+if (process.env.VITEST === undefined) {
+  if (config.transport === "stdio") arrancarStdio();
+  else arrancarHttp();
 }

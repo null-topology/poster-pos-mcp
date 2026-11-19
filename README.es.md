@@ -130,6 +130,7 @@ valores sin comillas antes de cualquier validación; lo exportado en el shell ll
 | `SERVICE_NAME` | `poster-rush` | Nombre del servidor MCP, `/health`, `/`, título y encabezado de la página de autorización y log de arranque. `^[A-Za-z0-9._-]{1,64}$`, tal como está escrito: no se recorta, así que un valor en blanco o con espacios alrededor falla |
 | `OAUTH_SUBJECT` | `roy` | Claim `sub` de los tokens de acceso y refresh. `^[A-Za-z0-9._@-]{1,64}$`, sin recortar, como `SERVICE_NAME`. Los tokens emitidos con un valor anterior siguen valiendo hasta que expiran |
 | `TOKEN_SOURCE` | `gsm` | De dónde salen los tokens de la API de Póster: `gsm` (Google Secret Manager), `mysql` (tabla local `poster_accounts`) o `env` (variables `POSTER_TOKEN_<CUENTA>`). Exactamente uno de los tres, sin recortar: cualquier otro valor, también uno con espacios alrededor, falla. En blanco = por defecto. `/health` y el log de arranque lo muestran |
+| `MCP_TRANSPORT` | `http` | `http`: un servidor HTTP en `PORT` con el endpoint `/mcp`; necesita `MCP_BEARER_TOKEN` u OAuth. `stdio`: el cliente MCP lanza el proceso y habla con él por stdin/stdout; no se abre ningún puerto, no hace falta autenticación y todo el log (arranque y auditoría) va a stderr. Exactamente uno de los dos, sin recortar. En blanco = por defecto |
 | `POSTER_TOKEN_<CUENTA>` | sin definir | Solo con `env`; con `gsm` y `mysql` se ignora. Una por cuenta de `POSTER_ACCOUNTS`, con el nombre de la cuenta en mayúsculas y cada guion cambiado por guion bajo (`cafe-04` → `POSTER_TOKEN_CAFE_04`); las variables de cuentas fuera de la lista no se leen. Con la lista por defecto son diez variables, de `POSTER_TOKEN_CAFE_01` a `POSTER_TOKEN_CAFE_10`. Cada valor se recorta y luego debe cumplir `^[A-Za-z0-9:._~-]{16,}$`: al menos 16 caracteres, solo letras ASCII, dígitos y `:` `.` `_` `~` `-` (un token `<id de cuenta>:<hex>` cumple; esa forma es un ejemplo, no un formato de token de Póster verificado). Falla un token que falta o está en blanco, o que no tiene ese formato, y un solo error nombra todas las variables que fallan y nunca cita un valor. Se lee una vez al arrancar, así que un token cambiado vale tras reiniciar; con `gsm` o `mysql` el token se guarda en caché 10 minutos y se vuelve a leer en la primera búsqueda después de ese plazo. Estos tokens se quitan de los mensajes de error y de las entradas de auditoría, también los de cuentas nunca consultadas |
 | `POSTER_MYSQL_URL` | sin definir | Solo con `mysql`; con `gsm` y `env` se ignora. Reemplaza la línea `DATABASE_URL` del archivo en `FINANZAS_ENV_PATH`; si no está definida o está en blanco, ese archivo se lee en la primera búsqueda de token. Con `mysql`, un valor que no es una URL válida detiene el arranque. Un `DATABASE_URL` genérico del entorno no se usa. Los errores de conexión y consulta MySQL nombran el origen de la URL (`POSTER_MYSQL_URL` o la línea `DATABASE_URL` del archivo) y como mucho el código de error del driver, nunca la URL |
 
@@ -157,7 +158,7 @@ en la configuración de entorno de la plataforma:
 | `POSTER_TOKEN_TIENDA_SUR` | el token de la API de Póster de `tienda-sur` |
 | `DEFAULT_WRITE_ACCOUNT` | `tienda-norte` |
 | `WRITE_DEFAULT_ACCOUNTS` | `tienda-norte` |
-| `MCP_BEARER_TOKEN` | un secreto aleatorio, por ejemplo la salida de `openssl rand -hex 32` |
+| `MCP_BEARER_TOKEN` | un secreto aleatorio, por ejemplo la salida de `openssl rand -hex 32` (solo HTTP; con `MCP_TRANSPORT=stdio` se omite) |
 
 Son valores para la plataforma, no un script para ejecutar; cada token se captura tal cual, sin comillas. No hacen
 falta `GCP_PROJECT_ID`, `SECRET_PREFIX`, `POSTER_MYSQL_URL` ni `FINANZAS_ENV_PATH`; `PORT` y `PUBLIC_BASE_URL` se
@@ -168,10 +169,10 @@ se detiene al arrancar con un error que nombra la variable y nunca cita su valor
 ### Ejecutar con npx
 
 El servidor corre sin clonar el repositorio: `npx` descarga el repositorio en una etiqueta, instala las dependencias,
-compila TypeScript con el script `prepare` y arranca el servidor HTTP. Con las variables de arriba en el entorno:
+compila TypeScript con el script `prepare` y arranca el servidor. Con las variables de arriba en el entorno:
 
 ```bash
-npx -y github:null-topology/poster-pos-mcp#v0.3.0
+npx -y github:null-topology/poster-pos-mcp#v0.4.0
 ```
 
 - Requiere Node.js 20 o superior, `git` en el `PATH` y scripts de instalación habilitados (sin `--ignore-scripts`).
@@ -179,7 +180,36 @@ npx -y github:null-topology/poster-pos-mcp#v0.3.0
 - Fija una etiqueta: sin `#<etiqueta>` se ejecuta la rama principal tal como esté en ese momento.
 - No se lee un `.env` del directorio actual. El `AUDIT_DIR` por defecto (`./audit`) queda dentro de la caché de npx;
   define `AUDIT_DIR` con un directorio con permiso de escritura.
-- El endpoint MCP es `http://<host>:<PORT>/mcp` (puerto por defecto 3210). El servidor escucha en todas las interfaces.
+- Por HTTP el endpoint MCP es `http://<host>:<PORT>/mcp` (puerto por defecto 3210). El servidor escucha en todas las
+  interfaces.
+
+Para que un cliente MCP lance el servidor él mismo por stdio, define `MCP_TRANSPORT=stdio`; entonces no hacen falta
+`MCP_BEARER_TOKEN`, OAuth, `PORT` ni `PUBLIC_BASE_URL`. Una configuración de cliente en el formato habitual
+`mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "poster": {
+      "command": "npx",
+      "args": ["-y", "github:null-topology/poster-pos-mcp#v0.4.0"],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "TOKEN_SOURCE": "env",
+        "POSTER_ACCOUNTS": "tienda-norte,tienda-sur",
+        "POSTER_TOKEN_TIENDA_NORTE": "<token de tienda-norte>",
+        "POSTER_TOKEN_TIENDA_SUR": "<token de tienda-sur>",
+        "DEFAULT_WRITE_ACCOUNT": "tienda-norte",
+        "WRITE_DEFAULT_ACCOUNTS": "tienda-norte",
+        "AUDIT_DIR": "/ruta/a/auditoria"
+      }
+    }
+  }
+}
+```
+
+El primer arranque compila el paquete antes de que el servidor responda, unos 10-15 segundos; los siguientes arrancan
+desde la caché de npx.
 
 ## Tests
 

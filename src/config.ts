@@ -129,6 +129,16 @@ function parseTokenSource(e: Entorno): FuenteTokens {
   throw new Error('TOKEN_SOURCE: valor no válido; usa exactamente "gsm", "mysql" o "env" (sin espacios).');
 }
 
+type Transporte = "http" | "stdio";
+
+/** Blank means http; otherwise exactly "http" or "stdio", not trimmed. */
+function parseTransport(e: Entorno): Transporte {
+  const v = e.MCP_TRANSPORT;
+  if (v === undefined || isBlank(v)) return "http";
+  if (v === "http" || v === "stdio") return v;
+  throw new Error('MCP_TRANSPORT: valor no válido; usa exactamente "http" o "stdio" (sin espacios).');
+}
+
 /** Variable holding an account's Poster token with TOKEN_SOURCE=env: cafe-04 → POSTER_TOKEN_CAFE_04. */
 export const variableToken = (cuenta: string) => `POSTER_TOKEN_${cuenta.toUpperCase().replace(/-/g, "_")}`;
 
@@ -197,6 +207,8 @@ export function cargarConfig(e: Entorno) {
   const tokenSource = parseTokenSource(e);
   return {
     raiz: RAIZ,
+    /** MCP transport (MCP_TRANSPORT): http serves /mcp on PORT; stdio speaks MCP on stdin/stdout and needs no auth. */
+    transport: parseTransport(e),
     port: Number(env("PORT", "3210")),
     publicBaseUrl: env("PUBLIC_BASE_URL", `http://localhost:${env("PORT", "3210")}`).replace(/\/$/, ""),
     tokenSource,

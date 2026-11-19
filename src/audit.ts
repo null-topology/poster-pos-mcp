@@ -1,5 +1,5 @@
 // Auditoría de escrituras: quién, cuándo, cuenta, método, payload (sin token) y resultado.
-// Cada evento va (1) a stdout como JSON → Cloud Logging lo conserva en producción y
+// Cada evento va (1) a stdout como JSON (stderr with MCP_TRANSPORT=stdio) → Cloud Logging lo conserva en producción y
 // (2) a un JSONL local por día en AUDIT_DIR (en Cloud Run es efímero; la fuente de verdad es Logging).
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -65,7 +65,8 @@ export function auditar(e: Omit<EventoAuditoria, "ts">): void {
     /* a throwing getter leaves the severity at INFO */
   }
   try {
-    console.log(`{"severity":"${severidad(modo)}","audit":true,${linea.slice(1)}`);
+    // With MCP_TRANSPORT=stdio stdout carries the MCP protocol, so the log line goes to stderr.
+    (config.transport === "stdio" ? console.error : console.log)(`{"severity":"${severidad(modo)}","audit":true,${linea.slice(1)}`);
   } catch {
     /* stdout no disponible: queda el JSONL */
   }
