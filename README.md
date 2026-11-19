@@ -78,6 +78,19 @@ Where configuration can only be passed as environment variables (no `.env` file,
 
 These are values for the platform, not a script to run; each token goes in as it is, without quotes. `GCP_PROJECT_ID`, `SECRET_PREFIX`, `POSTER_MYSQL_URL` and `FINANZAS_ENV_PATH` are not needed; set `PORT` and `PUBLIC_BASE_URL` as your platform requires. Writes to `shop-south` still need `permitir_otra_cuenta: true`. When a token variable is missing or blank, or its token breaks the format rule in the table above, the server stops at startup with an error that names the variable and never quotes its value.
 
+### Run with npx
+
+The server runs without a clone: `npx` fetches the repository at a tag, installs the dependencies, compiles TypeScript through the `prepare` script and starts the HTTP server. With the variables above set in the environment:
+
+```bash
+npx -y github:null-topology/poster-pos-mcp#v0.3.0
+```
+
+- It needs Node.js 20 or later, `git` on the `PATH` and install scripts enabled (no `--ignore-scripts`). The first run builds the package; later runs reuse the npx cache.
+- Pin a tag: without `#<tag>` it runs the default branch as it is at that moment.
+- A `.env` file in the current directory is not read. The default `AUDIT_DIR` (`./audit`) resolves inside the npx cache, so set `AUDIT_DIR` to a writable directory of your choice.
+- The MCP endpoint is `http://<host>:<PORT>/mcp` (default port 3210). The server listens on all interfaces.
+
 ## Authorization limits
 
 The passphrase step of `/authorize` allows 5 wrong attempts per 15-minute window. The window starts at the first wrong passphrase, and a successful authorization resets the counter. The counter is shared by every client of a server instance, and `X-Forwarded-For` plays no part in the decision. Known limitations of this design (residual risks):

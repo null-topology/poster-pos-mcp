@@ -165,6 +165,22 @@ definen según lo pida la plataforma. Escribir en `tienda-sur` sigue exigiendo `
 variable de token falta o está en blanco, o su token no cumple la regla de formato de la tabla de arriba, el servidor
 se detiene al arrancar con un error que nombra la variable y nunca cita su valor.
 
+### Ejecutar con npx
+
+El servidor corre sin clonar el repositorio: `npx` descarga el repositorio en una etiqueta, instala las dependencias,
+compila TypeScript con el script `prepare` y arranca el servidor HTTP. Con las variables de arriba en el entorno:
+
+```bash
+npx -y github:null-topology/poster-pos-mcp#v0.3.0
+```
+
+- Requiere Node.js 20 o superior, `git` en el `PATH` y scripts de instalación habilitados (sin `--ignore-scripts`).
+  La primera ejecución compila el paquete; las siguientes usan la caché de npx.
+- Fija una etiqueta: sin `#<etiqueta>` se ejecuta la rama principal tal como esté en ese momento.
+- No se lee un `.env` del directorio actual. El `AUDIT_DIR` por defecto (`./audit`) queda dentro de la caché de npx;
+  define `AUDIT_DIR` con un directorio con permiso de escritura.
+- El endpoint MCP es `http://<host>:<PORT>/mcp` (puerto por defecto 3210). El servidor escucha en todas las interfaces.
+
 ## Tests
 
 ```bash
