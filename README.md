@@ -14,7 +14,7 @@ Letting an LLM write to a production POS is risky. The server enforces the safet
 | Writes limited to a permission set | Only the accounts in `WRITE_DEFAULT_ACCOUNTS` (default `cafe-04` while `POSTER_ACCOUNTS` is unset, empty otherwise; may be set empty) are writable by default. Any other account needs an explicit `permitir_otra_cuenta: true` on that call |
 | **Dry-run by default** | Every write with `confirm: false` returns the diff, warnings and the exact payload without touching Poster |
 | Apply once, then verify | `confirm: true` writes once (no retries, to avoid duplicates) and **reads back** to verify |
-| Audit log | Every dry-run, apply and rejection is logged with who, when, account, method, payload (token-redacted) and result |
+| Audit log | Every dry-run, apply and rejection is logged with who, when, account, method, payload (token-redacted) and result. A write whose HTTP attempt failed once it had started (network error, timeout, a reply that is not JSON, or an HTTP 5xx status) is logged as `desconocido`: it may have been applied, so check with a read before retrying. A write applied but not verifiable by its read-back stays `aplicado`, with `verificacion.ok: false` and a notice not to repeat it |
 | Secrets never exposed | Tokens come from Google Secret Manager, a local MySQL table or `POSTER_TOKEN_<ACCOUNT>` environment variables (`TOKEN_SOURCE`), are redacted from errors and logs, and no tool returns them |
 | No destructive deletes | Items off the menu are **hidden**, not deleted |
 

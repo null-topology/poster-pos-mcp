@@ -2,11 +2,13 @@
 //   · dry-run por defecto: arma el payload, lee el estado actual y devuelve el diff SIN escribir.
 //   · confirm: true aplica, lee de vuelta y verifica.
 //   · Solo cuentas de WRITE_DEFAULT_ACCOUNTS; otra cuenta exige permitir_otra_cuenta: true.
-//   · Todo (dry-run, aplicado o rechazado) queda en auditoría sin token.
+//   · Every outcome (dry-run, aplicado, rechazado, desconocido) is audited without tokens. A write
+//     whose read-back fails stays aplicado, with verificacion.ok false.
 import type { PosterApi, PosterRespuesta } from "../poster.js";
-import { errorPoster } from "../poster.js";
+import { errorPoster, EscrituraIncierta, resumenPoster } from "../poster.js";
 import { config, verificarEscritura } from "../config.js";
 import { auditar } from "../audit.js";
+import { redactar } from "../tokens.js";
 import { centavos, diff, fechaPoster, hoyMx, norm, num, pesos, unidadReceta, type Cambio } from "../util.js";
 
 type Obj = Record<string, any>;
@@ -34,13 +36,16 @@ interface Plan {
   verificar?: (r: PosterRespuesta) => Promise<{ ok: boolean; detalle: unknown }>;
 }
 
+const AVISO_SIN_RELECTURA =
+  "La escritura se aplicó en Póster, pero no se pudo releer para verificarla. No la repitas: revisa el resultado con una lectura.";
+
 async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promise<Plan>) {
   const base = { actor: ctx.actor, cliente: ctx.cliente, cuenta: a.cuenta };
-  let herramienta = "?";
+  let plan: Plan | undefined;
   try {
     verificarEscritura(a.cuenta, a.permitir_otra_cuenta);
-    const plan = await construir();
-    herramienta = plan.herramienta;
+    plan = await construir();
+    const herramienta = plan.herramienta;
     const cambios: Cambio[] = diff(plan.antes ?? {}, plan.despues); // creación: cada campo aparece como nuevo
     if (!a.confirm) {
       auditar({ ...base, herramienta, metodo: plan.metodo, modo: "dry-run", payload: plan.payload });
@@ -58,14 +63,32 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
     const err = errorPoster(r);
     if (err || (r.response === undefined && r.success !== 1)) {
       auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err ?? "sin response" });
-      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err ?? r, payload: plan.payload };
+      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err ?? resumenPoster(r), payload: plan.payload };
     }
-    const verificacion = plan.verificar ? await plan.verificar(r) : { ok: true, detalle: "sin verificación" };
+    // The write went through: a failed read-back must not turn it into an error, or a retry duplicates it.
+    let verificacion: { ok: boolean; detalle: unknown };
+    let aviso: string | undefined;
+    try {
+      verificacion = plan.verificar ? await plan.verificar(r) : { ok: true, detalle: "sin verificación" };
+    } catch (e) {
+      verificacion = { ok: false, detalle: redactar(String((e as Error)?.message ?? e)) };
+      aviso = AVISO_SIN_RELECTURA;
+    }
     auditar({ ...base, herramienta, metodo: plan.metodo, modo: "aplicado", payload: plan.payload, resultado: { respuesta: r.response, verificacion } });
-    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, verificacion };
+    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, verificacion, ...(aviso ? { aviso } : {}) };
   } catch (e) {
-    const msg = String((e as Error).message ?? e);
-    auditar({ ...base, herramienta, metodo: "-", modo: "rechazado", payload: a, error: msg });
+    const msg = String((e as Error)?.message ?? e);
+    const herramienta = plan?.herramienta ?? "?";
+    if (e instanceof EscrituraIncierta && plan) {
+      // Attempted without a usable answer: neither applied nor rejected, and it must not be repeated blindly.
+      auditar({ ...base, herramienta, metodo: plan.metodo, modo: "desconocido", payload: plan.payload, error: msg });
+      throw new Error(
+        `La escritura ${plan.metodo} en ${a.cuenta} puede haberse aplicado en Póster (${msg}). ` +
+          "Verifica con una lectura antes de reintentar; no la repitas a ciegas.",
+      );
+    }
+    // Failed before the attempt: with a plan, the entry shows the method and payload that were not sent.
+    auditar({ ...base, herramienta, metodo: plan?.metodo ?? "-", modo: "rechazado", payload: plan ? plan.payload : a, error: msg });
     throw e;
   }
 }
@@ -913,13 +936,9 @@ export async function crearTransaccion(
         // Ventana que cubre el día de la transacción y hoy (por zona horaria / fecha de aplicación).
         const diaTx = fechaPoster(fecha.slice(0, 10)), hoy = fechaPoster(hoyMx());
         const desde = diaTx <= hoy ? diaTx : hoy, hasta = diaTx >= hoy ? diaTx : hoy;
-        let txns: Obj[] = [];
-        try {
-          txns = (await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", { dateFrom: desde, dateTo: hasta })) ?? [];
-        } catch {
-          txns = [];
-        }
-        const t = (txns ?? []).find((x) => num(x.transaction_id) === id);
+        // A failed read throws: the write stays aplicado with a failed read-back, never "not found".
+        const txns = (await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", { dateFrom: desde, dateTo: hasta })) ?? [];
+        const t = txns.find((x) => num(x.transaction_id) === id);
         if (!t) {
           return { ok: false, detalle: { transaction_id: id, alerta: "No se encontró la transacción al releer finance.getTransactions del día. Verifícala manualmente en el panel antes de reintentar." } };
         }

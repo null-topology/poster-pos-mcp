@@ -16,7 +16,7 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 | Escritura limitada a un conjunto de cuentas | Solo las cuentas de `WRITE_DEFAULT_ACCOUNTS` (por defecto `cafe-04` mientras `POSTER_ACCOUNTS` no esté definida, si no vacía; puede dejarse vacía) se escriben por defecto. Otra cuenta exige `permitir_otra_cuenta: true` **en esa llamada** (y la autorización de `OWNER_NAME`) |
 | Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin tocar Póster |
 | Aplicar = `confirm: true` | escribe una sola vez (sin reintentos, para no duplicar) y **lee de vuelta** para verificar |
-| Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`) |
+| Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`). Una escritura cuyo intento HTTP falló una vez iniciado (error de red, timeout, respuesta que no es JSON o estado HTTP 5xx) queda como `desconocido`: puede haberse aplicado, así que se verifica con una lectura antes de reintentar. Una escritura aplicada que no se pudo releer queda como `aplicado`, con `verificacion.ok: false` y un aviso de no repetirla |
 | Tokens nunca visibles | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`; se redactan de errores y auditoría; no hay herramienta que los devuelva |
 | Fuera de carta = ocultar | `actualizar_platillo` con `visible: false`; no existe herramienta de borrado |
 

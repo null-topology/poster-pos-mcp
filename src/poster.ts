@@ -8,18 +8,46 @@ export interface PosterApi {
   post<T = unknown>(cuenta: string, metodo: string, cuerpo: unknown, opciones?: { form?: boolean }): Promise<PosterRespuesta<T>>;
 }
 
+/**
+ * The HTTP attempt of a write failed after fetch was called (network error, timeout, a reply that is not
+ * JSON, or a reply with HTTP status 500 or higher whatever its body). The request may have reached
+ * Poster, so the write may have been applied.
+ */
+export class EscrituraIncierta extends Error {
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = "EscrituraIncierta";
+  }
+}
+
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const METODO_OK = /^[a-zA-Z]+\.[a-zA-Z0-9]+$/;
 
-async function pedir(url: string, init: RequestInit, intentos: number): Promise<PosterRespuesta> {
+/** A Poster reply that parsed as JSON, with its HTTP status. */
+interface Respuesta {
+  estado: number;
+  cuerpo: PosterRespuesta;
+}
+
+async function pedir(url: string, init: RequestInit, intentos: number): Promise<Respuesta> {
   let ultimo = "";
   for (let i = 0; i < intentos; i++) {
     try {
       const r = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
       const t = await r.text();
-      // Póster a veces devuelve HTML de error/limitación: se reintenta
-      if (t.trim().startsWith("{") || t.trim().startsWith("[")) return JSON.parse(t);
-      ultimo = `HTTP ${r.status}: ${t.slice(0, 120)}`;
+      // Redacted before clipping, so a token across the limit leaves no prefix.
+      const extracto = () => redactar(t).slice(0, 120);
+      if (t.trim().startsWith("{") || t.trim().startsWith("[")) {
+        try {
+          return { estado: r.status, cuerpo: JSON.parse(t) };
+        } catch {
+          // The parser's message quotes a clipped piece of the body, which may hold a token prefix.
+          ultimo = `HTTP ${r.status}: JSON inválido: ${extracto()}`;
+        }
+      } else {
+        // Póster a veces devuelve HTML de error/limitación: se reintenta
+        ultimo = `HTTP ${r.status}: ${extracto()}`;
+      }
     } catch (e) {
       ultimo = String((e as Error).message ?? e);
     }
@@ -28,8 +56,13 @@ async function pedir(url: string, init: RequestInit, intentos: number): Promise<
   throw new Error(redactar(`Póster sin respuesta JSON: ${ultimo}`));
 }
 
+/** A Poster reply as JSON text, redacted before it is clipped so a token across the limit leaves no prefix. */
+export function resumenPoster(r: unknown): string {
+  return redactar(JSON.stringify(r) ?? String(r)).slice(0, 300);
+}
+
 export function errorPoster(r: PosterRespuesta): string | null {
-  if (r.error !== undefined && r.error !== null && r.error !== 0) return redactar(JSON.stringify(r).slice(0, 300));
+  if (r.error !== undefined && r.error !== null && r.error !== 0) return resumenPoster(r);
   return null;
 }
 
@@ -38,7 +71,7 @@ export const posterHttp: PosterApi = {
     if (!METODO_OK.test(metodo)) throw new Error(`Método inválido: ${metodo}`);
     const token = await tokenDe(cuenta);
     const qs = new URLSearchParams({ format: "json", ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) });
-    const r = await pedir(`https://${cuenta}.joinposter.com/api/${metodo}?token=${encodeURIComponent(token)}&${qs}`, {}, 5);
+    const { cuerpo: r } = await pedir(`https://${cuenta}.joinposter.com/api/${metodo}?token=${encodeURIComponent(token)}&${qs}`, {}, 5);
     const e = errorPoster(r);
     if (e) throw new Error(`${metodo}: ${e}`);
     return r.response as never;
@@ -55,7 +88,16 @@ export const posterHttp: PosterApi = {
     } else {
       init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) };
     }
-    // Escrituras: un solo intento por si Póster sí aplicó y solo tardó en responder (evita duplicados)
-    return (await pedir(url, init, 1)) as never;
+    // Escrituras: un solo intento por si Póster sí aplicó y solo tardó en responder (evita duplicados).
+    // pedir has called fetch by the time it fails, so the outcome of the write is unknown.
+    let r: Respuesta;
+    try {
+      r = await pedir(url, init, 1);
+    } catch (e) {
+      throw new EscrituraIncierta(String((e as Error)?.message ?? e));
+    }
+    // A server error does not prove the write was not applied, whatever its body says.
+    if (r.estado >= 500) throw new EscrituraIncierta(`Póster respondió HTTP ${r.estado}: ${resumenPoster(r.cuerpo)}`);
+    return r.cuerpo as never;
   },
 };

@@ -1,6 +1,7 @@
 // Herramientas de LECTURA. Cada una devuelve datos compactos (pensados para leerse en el celular)
 // con importes ya convertidos a pesos. Ninguna escribe.
 import type { PosterApi } from "../poster.js";
+import { redactar } from "../tokens.js";
 import { CUENTAS, config } from "../config.js";
 import { coincide, fechaPoster, num, pesos, promoVigente } from "../util.js";
 
@@ -293,5 +294,6 @@ export async function posterGet(api: PosterApi, a: { cuenta: string; metodo: str
   if (!METODO_LECTURA.test(a.metodo)) throw new Error("Solo se permiten métodos de lectura <modulo>.get*");
   const r = await api.get(a.cuenta, a.metodo, a.params ?? {});
   const texto = JSON.stringify(r);
-  return { cuenta: a.cuenta, metodo: a.metodo, bytes: texto.length, respuesta: texto.length > 60_000 ? `${texto.slice(0, 60_000)}… (truncado)` : r };
+  // Redacted before it is clipped, so a token across the limit leaves no prefix.
+  return { cuenta: a.cuenta, metodo: a.metodo, bytes: texto.length, respuesta: texto.length > 60_000 ? `${redactar(texto).slice(0, 60_000)}… (truncado)` : r };
 }

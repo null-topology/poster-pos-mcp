@@ -86,11 +86,64 @@ export async function tokenDe(cuenta: string): Promise<string> {
   return token;
 }
 
-/** Quita cualquier token conocido de un texto (mensajes de error, payloads de auditoría). */
-export function redactar(texto: string): string {
-  let s = texto.replace(/token=[^&\s"']+/gi, "token=***");
+/** Forms a known token can take in a text: literal, URL-encoded and escaped inside a JSON string. */
+const formas = (token: string) => [token, encodeURIComponent(token), JSON.stringify(token).slice(1, -1)];
+
+/**
+ * Redactor for the tokens known now. Every form of every known token is matched in one pass over the
+ * original text, longest first, so a token that contains or is a prefix of another leaves no fragment.
+ * Two tokens that cross (one starts inside the other and ends beyond it) are not guaranteed to be fully
+ * removed. The `token=` pattern runs after. The pattern is compiled once here and reused for every text.
+ */
+function redactor(): (texto: string) => string {
+  const conocidas = new Set<string>();
   // Con TOKEN_SOURCE=env, todos los tokens desde el arranque, aunque su cuenta no se haya consultado.
-  for (const token of config.envTokens.values()) s = s.split(token).join("***");
-  for (const { token } of cache.values()) if (token) s = s.split(token).join("***");
-  return s;
+  for (const token of config.envTokens.values()) for (const f of formas(token)) conocidas.add(f);
+  for (const { token } of cache.values()) if (token) for (const f of formas(token)) conocidas.add(f);
+  const patron = conocidas.size
+    ? new RegExp(
+        [...conocidas]
+          .sort((a, b) => b.length - a.length)
+          .map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("|"),
+        "g",
+      )
+    : null;
+  return (texto) => {
+    const s = patron ? texto.replace(patron, "***") : texto;
+    // Stops at a backslash too: in serialized JSON it starts an escape, and eating it breaks the JSON.
+    return s.replace(/token=[^&\s"'\\]+/gi, "token=***");
+  };
+}
+
+/** Quita cualquier token conocido de un texto (mensajes de error, extractos de respuestas de Póster). */
+export function redactar(texto: string): string {
+  return redactor()(texto);
+}
+
+/**
+ * Copy of `v` with every string and every object key redacted, for a single serialization afterwards.
+ * The value is first normalized with one JSON round trip (applies `toJSON`, drops `undefined`; a
+ * top-level `undefined` becomes `null`); numbers, booleans and `null` are never changed. Keys of one
+ * object that redact to the same text are all kept: the later ones get " (2)", " (3)", ...
+ * A circular value or a BigInt throws the TypeError of `JSON.stringify`.
+ */
+export function redactarEstructura(v: unknown): unknown {
+  const r = redactor();
+  const recorrer = (x: unknown): unknown => {
+    if (typeof x === "string") return r(x);
+    if (x === null || typeof x !== "object") return x;
+    if (Array.isArray(x)) return x.map(recorrer);
+    const usadas = new Set<string>();
+    const pares: [string, unknown][] = [];
+    for (const [k, valor] of Object.entries(x)) {
+      const base = r(k);
+      let clave = base;
+      for (let n = 2; usadas.has(clave); n++) clave = `${base} (${n})`;
+      usadas.add(clave);
+      pares.push([clave, recorrer(valor)]);
+    }
+    return Object.fromEntries(pares);
+  };
+  return recorrer(JSON.parse(JSON.stringify(v) ?? "null"));
 }

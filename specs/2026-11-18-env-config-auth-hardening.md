@@ -340,14 +340,26 @@ Redaction:
   matches the literal value, its `encodeURIComponent` form, and its JSON-escaped form
   (`JSON.stringify(token).slice(1, -1)`). `redactar()` finds all matches in one pass over the
   original text, longest first, so a token that contains or is a prefix of another leaves no
-  fragment; the `token=` pattern is applied after the known secrets.
+  fragment; the `token=` pattern is applied after the known secrets and may also rewrite ordinary
+  data that contains `token=` (over-redaction is the intended direction). The pattern is built once
+  per walk of a value, not once per string. Two different tokens that cross (one starts inside the
+  other and ends beyond it) are not guaranteed to be fully removed.
 - Poster error texts (`src/poster.ts`) are redacted before they are clipped to their length limit.
+  When a reply looks like JSON but does not parse, the error is a fixed text with the HTTP status
+  and the redacted, then clipped, body excerpt; the parser's own message is never used.
 - A write rejected by Poster without a usable `error` field returns a redacted, clipped diagnostic
   of the reply, never the raw reply.
-- Every tool result and tool error sent to the MCP client is redacted on its serialized text,
-  including successful read results (`poster_get` and the others) and applied-write replies.
-- Audit: `auditar` redacts every string value and every object key of the event recursively,
-  then serializes once.
+- Tool results sent to the MCP client are redacted structurally: the value is normalized with one
+  JSON round trip, every string and every object key is redacted, numbers, booleans and `null` are
+  never changed, and the result is serialized once, so the text is always valid JSON. This covers
+  successful read results and applied-write replies. `poster_get` redacts its text before it
+  truncates it. Tool error messages are redacted as text.
+- Audit: `auditar` redacts every string value and every object key of the event with the same
+  structural walk, then serializes once.
+- Key collisions: when two keys of one object redact to the same text, both are kept; the later
+  ones get a numeric suffix (` (2)`, ` (3)`), in client results and audit lines alike.
+- The contract covers calls that reach a tool handler. A call the MCP SDK rejects on its input
+  schema sends nothing to Poster and is not audited.
 
 Write outcome and audit:
 
@@ -355,18 +367,24 @@ Write outcome and audit:
   verification throws, the result is `modo: "aplicado"` with
   `verificacion: { ok: false, detalle: <redacted error message> }` and a notice that the write was
   applied and must not be repeated. The audit entry is `aplicado` with the same `verificacion`.
-  Nothing is thrown.
-- Unknown outcome: when the HTTP attempt of the write itself fails (network error, timeout, a
-  response that is not JSON), the request may have reached Poster. `src/poster.ts` marks only
-  that case with a dedicated exported error class, raised once `fetch` has been called. The audit
-  entry uses the new mode `desconocido` with the redacted error, and the tool fails with a message
-  that says the write may have been applied and must be checked with a read before any retry.
-  Every failure before the request is sent (validation, permission, plan construction, token
-  lookup, method check) stays `rechazado`.
+  Nothing is thrown. A read call that fails during read-back counts as a failed read-back, never
+  as "not found".
+- Unknown outcome: when the HTTP attempt of the write fails after it has started (network or DNS
+  error, timeout, a reply that is not JSON, or a reply with HTTP status 500 or higher whatever its
+  body), the request may have reached Poster. `src/poster.ts` marks only that case with a
+  dedicated exported error class; its message carries the HTTP status when there is one and the
+  redacted reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
+  and the tool fails with a message that says the write may have been attempted and must be
+  checked with a read before any retry. Every failure before the attempt starts (validation,
+  permission, plan construction, token lookup, method check) stays `rechazado`; when a plan
+  exists, that entry carries the plan's method and payload. Read calls keep their current status
+  handling.
 - The audit stdout line and the JSONL line are always valid JSON, whatever the payload contains
-  (for example a comment with `token=` followed by quotes or backslashes).
-- `auditar` never throws. If an event cannot be serialized, it logs a minimal valid line with
-  `ts`, `herramienta`, `cuenta`, `modo` and an `error` saying the audit entry is incomplete.
+  (for example a comment with `token=` followed by quotes or backslashes). Severity on stdout:
+  `aplicado` NOTICE, `desconocido` WARNING, the other modes INFO.
+- `auditar` never throws and returns nothing. If an event cannot be serialized to a JSON object,
+  it logs a minimal valid line with `ts`, `herramienta`, `cuenta`, `modo` and an `error` saying
+  the audit entry is incomplete. `auditoria_reciente` skips lines that do not parse.
 
 ### Unit 4 acceptance
 
@@ -389,6 +407,20 @@ With a faked Poster API, no network:
   <token> }` reaches the client without the token; a successful `poster_get` reply and an
   applied-write reply containing the token reach the client without it; an upstream object key
   containing the token is absent from both audit lines.
+- A digit-only synthetic token that equals a number in a read result: the client text parses as
+  JSON and the number is unchanged. A token inside a string that itself holds JSON is absent from
+  the client text. Two keys that redact to the same text are both present, in the client text and
+  in the audit line. A token placed just before the 60 000-character limit of `poster_get` leaves
+  no prefix.
+- A reply that looks like JSON but does not parse, with the token near the start: the error has
+  no fragment of the token and does not contain the parser message.
+- A write reply with HTTP status 503 and a success-shaped JSON body gives `desconocido` with the
+  status in the message; a read reply with the same status and body behaves as before this unit.
+- A finance write whose read-back call fails returns `aplicado`, `verificacion.ok === false` and
+  the notice, not "not found".
+- A failure before sending with a built plan logs the plan's method and payload; a corrupt line in
+  the audit file is skipped by `auditoria_reciente`; a `desconocido` stdout line has severity
+  WARNING.
 - Existing write and audit tests pass; `tsc` and the wider check are clean.
 
 ## Exclusions and known limitations
@@ -417,6 +449,11 @@ With a faked Poster API, no network:
   normalized reliably.
 - An unset `POSTER_ACCOUNTS` and an explicit list equal to the defaults differ: only the unset
   case gives the `cafe-04` write target and permission.
+- Write time budget: a read-back that keeps failing retries for about 160 seconds, longer than a
+  typical client request timeout, and a slow plan read can let a write go out after the client
+  gave up. A client that then retries can duplicate an applied write.
+- GSM and MySQL tokens are not format-checked. A very short token makes redaction rewrite matching
+  text in results and audit lines; the text stays valid JSON.
 - Stricter validation can stop a deployment whose environment used to be accepted (an unknown or
   padded `TOKEN_SOURCE`, a permission outside the list); check the live environment against these
   rules before deploying.

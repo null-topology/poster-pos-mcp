@@ -4,7 +4,7 @@ import { z } from "zod";
 import { config, CUENTAS } from "./config.js";
 import { posterHttp, type PosterApi } from "./poster.js";
 import { auditoriaReciente } from "./audit.js";
-import { redactar } from "./tokens.js";
+import { redactar, redactarEstructura } from "./tokens.js";
 import * as L from "./tools/lectura.js";
 import * as W from "./tools/escritura.js";
 
@@ -43,7 +43,10 @@ const escritura = {
 const LECTURA = { readOnlyHint: true, openWorldHint: true } as const;
 const ESCRITURA = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
 
-const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 1) }] });
+// No known token reaches the client. Results are redacted structurally (every string and key, never
+// numbers, booleans or null) and serialized once, so the text is always valid JSON. Errors are redacted
+// as text.
+const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(redactarEstructura(data), null, 1) }] });
 const fallo = (e: unknown) => ({ isError: true, content: [{ type: "text" as const, text: redactar(String((e as Error)?.message ?? e)) }] });
 const envolver = <A>(fn: (a: A, extra: any) => Promise<unknown>) => async (a: A, extra: any) => {
   try {
