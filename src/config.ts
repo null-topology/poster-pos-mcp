@@ -119,19 +119,61 @@ function parseIdentifier(e: Entorno, variable: "SERVICE_NAME" | "OAUTH_SUBJECT",
   return v;
 }
 
-/** Blank means gsm; otherwise exactly "gsm" or "mysql", not trimmed. */
-function parseTokenSource(e: Entorno): "gsm" | "mysql" {
+type FuenteTokens = "gsm" | "mysql" | "env";
+
+/** Blank means gsm; otherwise exactly "gsm", "mysql" or "env", not trimmed. */
+function parseTokenSource(e: Entorno): FuenteTokens {
   const v = e.TOKEN_SOURCE;
   if (v === undefined || isBlank(v)) return "gsm";
-  if (v === "gsm" || v === "mysql") return v;
-  throw new Error('TOKEN_SOURCE: valor no válido; usa exactamente "gsm" o "mysql" (sin espacios).');
+  if (v === "gsm" || v === "mysql" || v === "env") return v;
+  throw new Error('TOKEN_SOURCE: valor no válido; usa exactamente "gsm", "mysql" o "env" (sin espacios).');
+}
+
+/** Variable holding an account's Poster token with TOKEN_SOURCE=env: cafe-04 → POSTER_TOKEN_CAFE_04. */
+export const variableToken = (cuenta: string) => `POSTER_TOKEN_${cuenta.toUpperCase().replace(/-/g, "_")}`;
+
+/**
+ * Format of a trimmed env token (Poster tokens look like `<account id>:<hex>`). Whitespace, control
+ * characters, quotes, backslashes, `%`, `&` and `=` are outside it, which keeps every token
+ * recognizable for redaction in every representation the server produces.
+ */
+const TOKEN_FORMATO_RE = /^[A-Za-z0-9:._~-]{16,}$/;
+
+/**
+ * With TOKEN_SOURCE=env, every listed account needs POSTER_TOKEN_<ACCOUNT>. Each value is trimmed; a
+ * missing or blank one, or one outside TOKEN_FORMATO_RE, fails. The error names every failing
+ * variable and never a value. Other sources ignore these variables (empty map).
+ */
+function parseEnvTokens(e: Entorno, fuente: FuenteTokens, accounts: readonly string[]): ReadonlyMap<string, string> {
+  const tokens = new Map<string, string>();
+  if (fuente !== "env") return tokens;
+  const faltan: string[] = [];
+  const invalidas: string[] = [];
+  for (const cuenta of accounts) {
+    const variable = variableToken(cuenta);
+    const valor = e[variable]?.trim();
+    if (!valor) faltan.push(variable);
+    else if (!TOKEN_FORMATO_RE.test(valor)) invalidas.push(variable);
+    else tokens.set(cuenta, valor);
+  }
+  if (faltan.length > 0 || invalidas.length > 0) {
+    const partes: string[] = [];
+    if (faltan.length > 0) partes.push(`faltan o están en blanco: ${faltan.join(", ")}`);
+    if (invalidas.length > 0) {
+      partes.push(
+        `no tienen el formato de un token (al menos 16 caracteres, solo letras ASCII, dígitos y los signos : . _ ~ -): ${invalidas.join(", ")}`,
+      );
+    }
+    throw new Error(`POSTER_TOKEN_*: con TOKEN_SOURCE=env cada cuenta de la lista necesita su token; ${partes.join("; ")}.`);
+  }
+  return tokens;
 }
 
 /**
  * POSTER_MYSQL_URL: blank means unset. With TOKEN_SOURCE=mysql a value that `new URL()` cannot
  * parse fails startup; the parse error carries the raw value, so it is replaced, never chained.
  */
-function parseMysqlUrl(e: Entorno, fuente: "gsm" | "mysql"): string | undefined {
+function parseMysqlUrl(e: Entorno, fuente: FuenteTokens): string | undefined {
   const url = e.POSTER_MYSQL_URL?.trim() || undefined;
   if (url === undefined || fuente !== "mysql") return url;
   let valida = true;
@@ -160,6 +202,8 @@ export function cargarConfig(e: Entorno) {
     tokenSource,
     /** Used only with TOKEN_SOURCE=mysql; when unset, the DATABASE_URL line of FINANZAS_ENV_PATH is read at the first lookup. */
     posterMysqlUrl: parseMysqlUrl(e, tokenSource),
+    /** Poster token per listed account with TOKEN_SOURCE=env (POSTER_TOKEN_<ACCOUNT>); empty with gsm and mysql. */
+    envTokens: parseEnvTokens(e, tokenSource, accounts),
     finanzasEnvPath: path.resolve(RAIZ, env("FINANZAS_ENV_PATH", "../erp-core/services/finanzas-pro/.env")),
     gcpProjectId: env("GCP_PROJECT_ID"),
     secretPrefix: env("SECRET_PREFIX", "poster-token-"),

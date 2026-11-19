@@ -1,8 +1,9 @@
 // Origen de tokens Póster. Nunca se registran ni se devuelven: solo los usa el cliente HTTP.
 //   gsm   → Google Secret Manager, secreto `<SECRET_PREFIX><cuenta en minúsculas>` (versión latest)
 //   mysql → tabla poster_accounts de la DB local de erp-core (solo para dev en la Mac)
+//   env   → variable POSTER_TOKEN_<CUENTA>, validada al arrancar; sin GCP ni MySQL, cambia solo al reiniciar
 import { readFileSync } from "node:fs";
-import { config, esCuenta, type Cuenta } from "./config.js";
+import { config, esCuenta, variableToken, type Cuenta } from "./config.js";
 
 const cache = new Map<Cuenta, { token: string; hasta: number }>();
 const TTL_MS = 10 * 60 * 1000;
@@ -72,6 +73,12 @@ async function desdeMysql(cuenta: Cuenta): Promise<string> {
 
 export async function tokenDe(cuenta: string): Promise<string> {
   if (!esCuenta(cuenta)) throw new Error(`Cuenta "${cuenta}" fuera de la lista blanca.`);
+  if (config.tokenSource === "env") {
+    // Validados al arrancar para cada cuenta de la lista: no hay cache ni importación de GSM o MySQL.
+    const t = config.envTokens.get(cuenta);
+    if (!t) throw new Error(`Sin token para ${cuenta} en ${variableToken(cuenta)}`);
+    return t;
+  }
   const hit = cache.get(cuenta);
   if (hit && hit.hasta > Date.now()) return hit.token;
   const token = config.tokenSource === "mysql" ? await desdeMysql(cuenta) : await desdeGsm(cuenta);
@@ -82,6 +89,8 @@ export async function tokenDe(cuenta: string): Promise<string> {
 /** Quita cualquier token conocido de un texto (mensajes de error, payloads de auditoría). */
 export function redactar(texto: string): string {
   let s = texto.replace(/token=[^&\s"']+/gi, "token=***");
+  // Con TOKEN_SOURCE=env, todos los tokens desde el arranque, aunque su cuenta no se haya consultado.
+  for (const token of config.envTokens.values()) s = s.split(token).join("***");
   for (const { token } of cache.values()) if (token) s = s.split(token).join("***");
   return s;
 }

@@ -17,7 +17,7 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 | Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin tocar Póster |
 | Aplicar = `confirm: true` | escribe una sola vez (sin reintentos, para no duplicar) y **lee de vuelta** para verificar |
 | Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`) |
-| Tokens nunca visibles | se leen de GSM (prod) o `poster_accounts` (dev); se redactan de errores y auditoría; no hay herramienta que los devuelva |
+| Tokens nunca visibles | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`; se redactan de errores y auditoría; no hay herramienta que los devuelva |
 | Fuera de carta = ocultar | `actualizar_platillo` con `visible: false`; no existe herramienta de borrado |
 
 ## Herramientas
@@ -124,11 +124,41 @@ valores sin comillas antes de cualquier validación; lo exportado en el shell ll
 | `NETWORK_NAME` | `RUSH Café` | En las instrucciones, descripciones de herramientas y la página de autorización (escapado en HTML). Mismas reglas que `OWNER_NAME` |
 | `SERVICE_NAME` | `poster-rush` | Nombre del servidor MCP, `/health`, `/`, título y encabezado de la página de autorización y log de arranque. `^[A-Za-z0-9._-]{1,64}$`, tal como está escrito: no se recorta, así que un valor en blanco o con espacios alrededor falla |
 | `OAUTH_SUBJECT` | `roy` | Claim `sub` de los tokens de acceso y refresh. `^[A-Za-z0-9._@-]{1,64}$`, sin recortar, como `SERVICE_NAME`. Los tokens emitidos con un valor anterior siguen valiendo hasta que expiran |
-| `TOKEN_SOURCE` | `gsm` | Exactamente `gsm` o `mysql`, sin recortar: cualquier otro valor, también uno con espacios alrededor, falla. En blanco = por defecto |
-| `POSTER_MYSQL_URL` | sin definir | Solo con `mysql`; con `gsm` se ignora. Reemplaza la línea `DATABASE_URL` del archivo en `FINANZAS_ENV_PATH`; si no está definida o está en blanco, ese archivo se lee en la primera búsqueda de token. Con `mysql`, un valor que no es una URL válida detiene el arranque. Un `DATABASE_URL` genérico del entorno no se usa. Los errores de conexión y consulta MySQL nombran el origen de la URL (`POSTER_MYSQL_URL` o la línea `DATABASE_URL` del archivo) y como mucho el código de error del driver, nunca la URL |
+| `TOKEN_SOURCE` | `gsm` | De dónde salen los tokens de la API de Póster: `gsm` (Google Secret Manager), `mysql` (tabla local `poster_accounts`) o `env` (variables `POSTER_TOKEN_<CUENTA>`). Exactamente uno de los tres, sin recortar: cualquier otro valor, también uno con espacios alrededor, falla. En blanco = por defecto. `/health` y el log de arranque lo muestran |
+| `POSTER_TOKEN_<CUENTA>` | sin definir | Solo con `env`; con `gsm` y `mysql` se ignora. Una por cuenta de `POSTER_ACCOUNTS`, con el nombre de la cuenta en mayúsculas y cada guion cambiado por guion bajo (`cafe-04` → `POSTER_TOKEN_CAFE_04`); las variables de cuentas fuera de la lista no se leen. Con la lista por defecto son diez variables, de `POSTER_TOKEN_CAFE_01` a `POSTER_TOKEN_CAFE_10`. Cada valor se recorta y luego debe cumplir `^[A-Za-z0-9:._~-]{16,}$`: al menos 16 caracteres, solo letras ASCII, dígitos y `:` `.` `_` `~` `-` (los tokens de Póster tienen la forma `<id de cuenta>:<hex>`). Falla un token que falta o está en blanco, o que no tiene ese formato, y un solo error nombra todas las variables que fallan y nunca cita un valor. Se lee una vez al arrancar, así que un token cambiado vale tras reiniciar; con `gsm` o `mysql` el token se guarda en caché 10 minutos y se vuelve a leer en la primera búsqueda después de ese plazo. Estos tokens se quitan de los mensajes de error y de las entradas de auditoría, también los de cuentas nunca consultadas |
+| `POSTER_MYSQL_URL` | sin definir | Solo con `mysql`; con `gsm` y `env` se ignora. Reemplaza la línea `DATABASE_URL` del archivo en `FINANZAS_ENV_PATH`; si no está definida o está en blanco, ese archivo se lee en la primera búsqueda de token. Con `mysql`, un valor que no es una URL válida detiene el arranque. Un `DATABASE_URL` genérico del entorno no se usa. Los errores de conexión y consulta MySQL nombran el origen de la URL (`POSTER_MYSQL_URL` o la línea `DATABASE_URL` del archivo) y como mucho el código de error del driver, nunca la URL |
 
 `PORT`, `PUBLIC_BASE_URL`, `FINANZAS_ENV_PATH`, `GCP_PROJECT_ID`, `SECRET_PREFIX`, `MCP_BEARER_TOKEN`,
 `OAUTH_SIGNING_KEY`, `OWNER_PASSPHRASE`, `OAUTH_ALLOWED_REDIRECTS` y `AUDIT_DIR` funcionan como antes, sin validación nueva.
+
+En Cloud Run, cada `POSTER_TOKEN_<CUENTA>` se mapea desde Secret Manager con `--set-secrets` (por ejemplo
+`--set-secrets POSTER_TOKEN_CAFE_04=poster-token-cafe-04:latest`) en vez de pasar el token como variable de entorno
+normal con `--set-env-vars`, donde quedaría visible en la configuración del servicio. Las instancias en marcha conservan
+el token con el que arrancaron; un token rotado llega al servicio con instancias nuevas o una revisión nueva.
+
+### Configuración solo con variables de entorno
+
+Donde la configuración solo puede pasarse como variables de entorno (sin archivo `.env`, sin acceso a Google Cloud ni a
+MySQL), se usa `TOKEN_SOURCE=env` y cada cuenta de la lista recibe su token. Sin `POSTER_ACCOUNTS` vale la lista por
+defecto, y las diez cuentas necesitan el suyo (de `POSTER_TOKEN_CAFE_01` a `POSTER_TOKEN_CAFE_10`). Una configuración
+mínima para dos cuentas que escribe por defecto en `tienda-norte`, como nombre y valor de cada variable que se captura
+en la configuración de entorno de la plataforma:
+
+| Variable | Valor |
+|---|---|
+| `TOKEN_SOURCE` | `env` |
+| `POSTER_ACCOUNTS` | `tienda-norte,tienda-sur` |
+| `POSTER_TOKEN_TIENDA_NORTE` | el token de la API de Póster de `tienda-norte` |
+| `POSTER_TOKEN_TIENDA_SUR` | el token de la API de Póster de `tienda-sur` |
+| `DEFAULT_WRITE_ACCOUNT` | `tienda-norte` |
+| `WRITE_DEFAULT_ACCOUNTS` | `tienda-norte` |
+| `MCP_BEARER_TOKEN` | un secreto aleatorio, por ejemplo la salida de `openssl rand -hex 32` |
+
+Son valores para la plataforma, no un script para ejecutar; cada token se captura tal cual, sin comillas. No hacen
+falta `GCP_PROJECT_ID`, `SECRET_PREFIX`, `POSTER_MYSQL_URL` ni `FINANZAS_ENV_PATH`; `PORT` y `PUBLIC_BASE_URL` se
+definen según lo pida la plataforma. Escribir en `tienda-sur` sigue exigiendo `permitir_otra_cuenta: true`. Si una
+variable de token falta o está en blanco, o su token no cumple la regla de formato de la tabla de arriba, el servidor
+se detiene al arrancar con un error que nombra la variable y nunca cita su valor.
 
 ## Tests
 

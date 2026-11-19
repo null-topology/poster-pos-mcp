@@ -1,6 +1,6 @@
 # Env-driven configuration and auth hardening
 
-Status: Units 1 and 2 implemented; Unit 3 not implemented. Base revision: `50ceab4`.
+Base revision: `50ceab4`.
 
 ## Purpose
 
@@ -17,8 +17,7 @@ listed under Unit 2 and one changed `/health` value: with `TOKEN_SOURCE` blank, 
 now reports `gsm` instead of the empty string (GSM is the token source used in both cases).
 Existing tests are the control for that.
 
-The work is split into three units, each delivered as its own commit. Unit 3 is optional and can
-be dropped without touching Units 1 and 2.
+The work is split into units.
 
 ## Unit 1: auth hardening and dependency bump
 
@@ -193,7 +192,7 @@ row, account outside the list) keep their messages.
 | `NETWORK_NAME` | `RUSH Café` | Business name in instructions, tool descriptions and the authorization page. |
 | `SERVICE_NAME` | `poster-rush` | MCP server name, `/health`, `/`, authorization page title and heading, startup log. The raw value must match `^[A-Za-z0-9._-]{1,64}$`; it is not trimmed, so a blank or padded value fails startup. |
 | `OAUTH_SUBJECT` | `roy` | `sub` claim of issued access and refresh tokens. The raw value must match `^[A-Za-z0-9._@-]{1,64}$` (not trimmed; blank or padded fails). Changing it affects attribution only; tokens issued under the old value stay valid. |
-| `TOKEN_SOURCE` | `gsm` | Existing. Exactly `gsm` or `mysql`, not trimmed; any other value, including a padded one, fails startup (today it silently falls back to GSM). Blank means default. |
+| `TOKEN_SOURCE` | `gsm` | Existing. Exactly `gsm` or `mysql` (`env` added in Unit 3), not trimmed; any other value, including a padded one, fails startup (today it silently falls back to GSM). Blank means default. |
 | `POSTER_MYSQL_URL` (new) | none | Used only with `TOKEN_SOURCE=mysql`. When set, it replaces the `DATABASE_URL` line read from `FINANZAS_ENV_PATH`; when unset or blank, that file is read lazily at the first lookup as today. With `TOKEN_SOURCE=mysql`, a nonblank value that `new URL()` cannot parse fails startup (the scheme is not checked; mysql2 does not check it either); with `gsm` it is ignored. A generic `DATABASE_URL` in the environment is not used. |
 
 `OWNER_NAME` and `NETWORK_NAME`: blank means default; control characters (C0, C1) and bidirectional
@@ -278,30 +277,127 @@ so with defaults they all say "RUSH Café".
   includes `scripts/` and `test/` is clean. The base already fails that wider check at
   `test/http.test.ts` (a response type), so a type-only edit there is allowed.
 
-## Unit 3 (optional): Poster tokens from the environment
+## Unit 3: Poster tokens from the environment
 
-Delivered separately because it adds a token source, not just a setting.
+Lets the server run where configuration can only be passed as environment variables: accounts
+(Unit 2) and their Poster API tokens both come from the environment, with no Google Cloud or MySQL
+dependency at runtime.
 
-- `TOKEN_SOURCE` gains `env`. Tokens come from `POSTER_TOKEN_<ACCOUNT>`, where `<ACCOUNT>` is the
-  account name upper-cased with `-` replaced by `_` (for example `POSTER_TOKEN_CAFE_04`). The
-  account alphabet has no `_`, so the mapping is one-to-one.
-- A token is read at the first lookup for its account and goes through the same cache as GSM
-  tokens, so `redactar()` strips it from errors and audit entries. A missing or blank variable
-  fails that lookup with a message that names the variable and no value.
-- Docs: on Cloud Run, map each token from Secret Manager with `--set-secrets`, never as a
-  plain-text env var. Env-sourced tokens change only with a new revision, while GSM tokens are
-  re-read every 10 minutes.
-- Acceptance: lookup by mapped name; missing and blank variables fail without a value in the
-  message; a synthetic token that appears in a Poster error is redacted in the tool error returned
-  to the client and in the audit entry; the default stays `gsm`.
+- `TOKEN_SOURCE` accepts exactly `env` in addition to `gsm` and `mysql` (same raw, untrimmed check).
+  The default stays `gsm`.
+- With `TOKEN_SOURCE=env`, every account in the account list needs `POSTER_TOKEN_<ACCOUNT>`, where
+  `<ACCOUNT>` is the account name upper-cased with `-` replaced by `_` (for example
+  `POSTER_TOKEN_CAFE_04`). The account alphabet has no `_`, so the mapping is one-to-one.
+- The loader validates the tokens at startup: each value is trimmed, and the trimmed value must
+  match `^[A-Za-z0-9:._~-]{16,}$` (Poster tokens look like `<account id>:<hex>`). A missing or blank
+  variable, or a trimmed value outside that format (whitespace, control characters, quotes,
+  backslashes, `%`, `&`, `=`, or fewer than 16 characters), fails startup. The format keeps tokens
+  recognizable for redaction in every representation the server produces. The error lists the
+  names of all failing variables and never any value.
+- Tokens are read once at startup; later changes to the process environment have no effect until
+  a restart.
+- Lookups for env tokens never import or call Google Secret Manager or MySQL. `POSTER_TOKEN_*`
+  variables are ignored with `gsm` and `mysql`.
+- `redactar()` strips every env token from the start, including tokens of accounts never looked
+  up, in addition to the existing `token=` pattern and cached tokens.
+- `/health` and the startup log report `env` as the token source.
+- Docs: `.env.example` and the configuration sections of both READMEs. On Cloud Run, map each token
+  from Secret Manager with `--set-secrets` rather than a plain-text env var. Env tokens change only
+  when the process restarts, while a GSM token is re-read at its first lookup after its 10-minute
+  cache entry expires. With the default account list, `env` needs all ten token variables. The
+  overview lines of both READMEs list all three token sources.
+
+### Unit 3 acceptance
+
+- Loader: the mapping (`cafe-04` to `POSTER_TOKEN_CAFE_04`); a missing, blank, padded-only or
+  whitespace-containing token fails startup with every failing variable named and a distinctive
+  marker value absent from the error; a padded valid token is trimmed; a token containing a DEL
+  or C1 control character, `"`, `\`, `%`, `&` or `=`, or shorter than 16 characters fails;
+  `TOKEN_SOURCE=" env"` fails; with `gsm` and with `mysql`, a valid `POSTER_TOKEN_*` variable is
+  ignored and the lookup still goes to that source; with no variables the default stays `gsm`.
+- Startup snapshot: changing `process.env` after the configuration loads changes neither lookups
+  nor redaction.
+- Lookup: with `env`, the token of a listed account is returned without importing GSM or MySQL
+  (both mocked and asserted not called); an account outside the list is still rejected.
+- Redaction: with `env`, a synthetic token of an account never looked up is stripped by
+  `redactar()`, every occurrence of it, not only the first; a synthetic token that appears in a
+  Poster error is absent from the tool error returned to the client and from the audit entry.
+- `/health` with `env` returns exactly `ok`, `servicio`, `tokens: "env"` and `oauth`, and no token.
+- Through the MCP server built with an env-token configuration (module reset, fetch faked): a read
+  tool call requests `https://<account>.joinposter.com/api/...` with that account's token,
+  URL-encoded; `/health` reports `env`.
+- All existing tests pass; `tsc` and the wider check are clean.
+
+## Unit 4: write outcome, audit and redaction integrity
+
+Fixes write results that contradict what happened in Poster, which can make a client repeat an
+applied write (for example a duplicate finance transaction), audit entries lost to redaction, and
+paths where a known token can reach the client or the audit log.
+
+Redaction:
+
+- Known secrets are every env token and every cached GSM or MySQL token. For each, the redactor
+  matches the literal value, its `encodeURIComponent` form, and its JSON-escaped form
+  (`JSON.stringify(token).slice(1, -1)`). `redactar()` finds all matches in one pass over the
+  original text, longest first, so a token that contains or is a prefix of another leaves no
+  fragment; the `token=` pattern is applied after the known secrets.
+- Poster error texts (`src/poster.ts`) are redacted before they are clipped to their length limit.
+- A write rejected by Poster without a usable `error` field returns a redacted, clipped diagnostic
+  of the reply, never the raw reply.
+- Every tool result and tool error sent to the MCP client is redacted on its serialized text,
+  including successful read results (`poster_get` and the others) and applied-write replies.
+- Audit: `auditar` redacts every string value and every object key of the event recursively,
+  then serializes once.
+
+Write outcome and audit:
+
+- Read-back failure after a successful write: when the write call succeeded and the read-back
+  verification throws, the result is `modo: "aplicado"` with
+  `verificacion: { ok: false, detalle: <redacted error message> }` and a notice that the write was
+  applied and must not be repeated. The audit entry is `aplicado` with the same `verificacion`.
+  Nothing is thrown.
+- Unknown outcome: when the HTTP attempt of the write itself fails (network error, timeout, a
+  response that is not JSON), the request may have reached Poster. `src/poster.ts` marks only
+  that case with a dedicated exported error class, raised once `fetch` has been called. The audit
+  entry uses the new mode `desconocido` with the redacted error, and the tool fails with a message
+  that says the write may have been applied and must be checked with a read before any retry.
+  Every failure before the request is sent (validation, permission, plan construction, token
+  lookup, method check) stays `rechazado`.
+- The audit stdout line and the JSONL line are always valid JSON, whatever the payload contains
+  (for example a comment with `token=` followed by quotes or backslashes).
+- `auditar` never throws. If an event cannot be serialized, it logs a minimal valid line with
+  `ts`, `herramienta`, `cuenta`, `modo` and an `error` saying the audit entry is incomplete.
+
+### Unit 4 acceptance
+
+With a faked Poster API, no network:
+
+- A write whose read-back throws returns `aplicado` with `verificacion.ok === false`, does not
+  throw, and writes one `aplicado` audit entry.
+- A write whose HTTP attempt fails (faked `fetch` rejecting) fails with the unknown-outcome
+  message and writes one `desconocido` audit entry; no `rechazado` entry is written for it.
+- A write that fails before sending (token lookup fails, permission denied) stays `rechazado`.
+- A payload comment containing `token=abc"x\` and a backslash-quote mix produces valid JSON on
+  stdout and in the JSONL file, with the token value redacted.
+- A synthetic token inside a nested payload string is redacted in both lines.
+- An event that cannot be serialized (a circular value) produces the minimal line and no throw.
+- Redaction, each with a synthetic known token: a token that is a prefix of another known token
+  and a token that contains `token=` leave no fragment; the percent-encoded and JSON-escaped forms
+  are stripped; a cached GSM token containing `"` or `\` echoed in a Poster error is absent from
+  the client error, stdout, the JSONL line and `auditoria_reciente`; a token straddling the clip
+  boundary of a Poster error leaves no prefix; a rejected write reply `{ success: 0, detail:
+  <token> }` reaches the client without the token; a successful `poster_get` reply and an
+  applied-write reply containing the token reach the client without it; an upstream object key
+  containing the token is absent from both audit lines.
+- Existing write and audit tests pass; `tsc` and the wider check are clean.
 
 ## Exclusions and known limitations
 
 - Write-tool semantics (dry-run, `permitir_otra_cuenta`, `borrar_platillo_old`), `poster_get`
   method scope, refresh-token lifetime and revocation, DCR loopback redirects. These are
   known weaknesses outside this change.
-- `/health`: no change to its fields or disclosure policy beyond the service name value and the
-  `tokens` value for a blank `TOKEN_SOURCE` (now `gsm`).
+- `/health`: no change to its fields or disclosure policy beyond the service name value, the
+  `tokens` value for a blank `TOKEN_SOURCE` (now `gsm`) and the new `env` value (Unit 3).
 - Operational helpers and deployment docs keep their fixed names: `scripts/redeploy.sh` (region,
   service name, fixed test list), `scripts/crear-frase-dueno.sh`, the `app=poster-rush` secret
   label in the importer, and `DEPLOY_CLOUD_RUN.md`. Values with commas passed through
