@@ -6,7 +6,7 @@ Esos son los valores por defecto: el nombre (`OWNER_NAME`), la red (`NETWORK_NAM
 (`POSTER_ACCOUNTS`) y el resto de ajustes se configuran por entorno; ver [Configuración](#configuración).
 
 - Local: `dev start poster-mcp` → `http://localhost:3210` (bloque de puertos **3210–3219**; el 3200 ya lo usa academy)
-- Producción: Cloud Run, tokens en Google Secret Manager → ver [DEPLOY_CLOUD_RUN.md](DEPLOY_CLOUD_RUN.md)
+- Producción (despliegue por defecto): Cloud Run, tokens en Google Secret Manager (`TOKEN_SOURCE` también admite MySQL o variables de entorno) → ver [DEPLOY_CLOUD_RUN.md](DEPLOY_CLOUD_RUN.md)
 
 ## Reglas que el servidor hace cumplir
 
@@ -18,9 +18,9 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 | Escritura limitada a un conjunto de cuentas | Solo las cuentas de `WRITE_DEFAULT_ACCOUNTS` (por defecto `cafe-04` mientras `POSTER_ACCOUNTS` no esté definida, si no vacía; puede dejarse vacía) se escriben por defecto. Otra cuenta exige `permitir_otra_cuenta: true` **en esa llamada** |
 | Dry-run por defecto | toda escritura con `confirm: false` devuelve `cambios` (diff), `avisos` y el `payload` exacto, sin escribir en Póster (puede leer de Póster para armar el diff) |
 | Aplicar = `confirm: true` | escribe una sola vez (sin reintentos, para no duplicar) y **lee de vuelta** para verificar |
-| Auditoría | cada dry-run/aplicación/rechazo: quién, cuándo, cuenta, método, payload sin token, resultado (stdout → Cloud Logging + JSONL en `AUDIT_DIR`). Una escritura queda como rechazo cuando la respuesta de Póster trae un `error` (distinto de 0). Una escritura cuyo intento HTTP falló una vez iniciado (error de red, timeout, respuesta que no es JSON o estado HTTP 5xx), o cuya respuesta no trae `error` ni resultado (ni `response` ni `success: 1`), queda como `desconocido`: puede haberse aplicado, así que se verifica con una lectura antes de reintentar. Una escritura aplicada que no se pudo releer queda como `aplicado`, con `verificacion.ok: false` y un aviso de no repetirla |
-| Redacción de tokens | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`, y viajan en la query string de cada petición a Póster. Los tokens conocidos (los de entorno desde el arranque, los de GSM o MySQL una vez cargados) se redactan, literales, codificados en URL (con los dígitos hexadecimales de los escapes `%XX` en mayúscula o en minúscula) o escapados en JSON, de resultados, errores y auditoría, igual que cualquier valor `token=`; no hay herramienta que los devuelva. Un número igual a un token conocido formado solo por dígitos y de al menos 16 caracteres se vuelve `"***"`; los demás números quedan igual |
-| Fuera de carta = ocultar | `update_dish` con `visible: false` o `hide_dish`. El único borrado, `delete_old_dish` (`menu.removeDish`), solo quita un platillo cuyo nombre termina en "(old)" y cuyos spots están todos marcados como ocultos (`visible` 0, como lo deja `hide_dish`); un platillo sin spots, o con un spot de visibilidad ausente o desconocida, se rechaza |
+| Auditoría | cada dry-run, aplicación, rechazo y resultado desconocido: quién, cuándo, cuenta y payload sin token; el método, la respuesta de Póster, la relectura y el error se registran cuando los hay (stdout → Cloud Logging + JSONL en `AUDIT_DIR`). Una escritura cuyo intento HTTP falló una vez iniciado (error de red, timeout, respuesta que no es JSON) o que recibió un estado HTTP 5xx, diga lo que diga el cuerpo, queda como `desconocido`, igual que una respuesta sin `error` ni resultado (ni `response` ni `success: 1`): puede haberse aplicado, así que se verifica con una lectura antes de reintentar. Fuera de esos casos, una respuesta cuyo `error` está presente y no es 0 ni null queda como rechazo. Una escritura aplicada queda como `aplicado`: si la relectura misma falla, `verificacion.ok` es false y un aviso pide no repetirla; una relectura que termina pero no coincide devuelve `verificacion.ok: false` con su propio detalle |
+| Redacción de tokens | se leen de GSM (prod), `poster_accounts` (dev) o variables de entorno `POSTER_TOKEN_<CUENTA>`, según `TOKEN_SOURCE`, y viajan en la query string de cada petición a Póster. Los tokens conocidos (los de entorno desde el arranque, los de GSM o MySQL una vez cargados) se enmascaran en resultados, errores y auditoría en sus formas literal, codificada en URL (con los dígitos hexadecimales de los escapes `%XX` en mayúscula o en minúscula) y escapada en JSON, y cualquier valor `token=` se enmascara |
+| Fuera de carta = ocultar | `update_dish` con `visible: false` o `hide_dish`. El único borrado, `delete_old_dish` (`menu.removeDish`), revisa el platillo que lee: el nombre debe terminar en "(old)" y todos sus spots deben estar marcados como ocultos (`visible` "0" o 0; `hide_dish` envía 0). Un platillo sin spots, o con un spot de visibilidad ausente o de otro valor o tipo, se rechaza. La revisión no sabe si se usó `hide_dish` |
 
 ## Herramientas
 
@@ -34,9 +34,9 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 `create_supply`, `update_dish` (updateDish), `update_category` (updateCategory),
 `update_prepack` (updatePrepack), `create_category` (createCategory), `create_prepack` (createPrepack),
 `create_dish` (createDish con receta y grupos; relee y verifica), `hide_dish` (getProduct + updateDish COMPLETO con receta, visible 0 y sufijo " (old)"),
-`update_dish_recipe` (getProduct + updateDish COMPLETO que reemplaza receta y grupos; conserva nombre, categoría, precio y visibilidad; relee y verifica),
+`update_dish_recipe` (getProduct + updateDish COMPLETO que reemplaza receta y grupos; reenvía los demás campos a partir de lo leído, entre ellos nombre, categoría, workshop, color, precio y visibilidad; relee y compara receta, grupos, precio y visibilidad),
 `delete_old_dish` (menu.removeDish solo para un platillo cuyo nombre termina en "(old)" y cuyos spots están todos marcados como ocultos; relee y verifica),
-`create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, al revés que el resto de la API—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories` y tras aplicar relee `finance.getTransactions` avisando si el monto quedó 100× desviado),
+`create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, mientras que `create_supply` y `create_dish` envían centavos—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories` y tras aplicar relee `finance.getTransactions` avisando si el monto quedó 100× desviado),
 `create_supply` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
 `assign_supply_payment` (storage.updateSupply: el botón "pagar" por API — asigna/reasigna la cuenta de Finanzas de una compra a crédito; relee y verifica que el total y los renglones no cambiaron).
 
@@ -50,7 +50,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 - `menu.updateDish` es update **COMPLETO**: hay que reenviar nombre, categoría, workshop, color, `price`, `visible`,
   `modificationgroup` y `"ingredient[]": []`. Omitir `price`/`"ingredient[]"` da `Bad price value` / `Bad ingredient value`.
 - **updateDish BORRA la receta** del platillo (la API descarta recetas de platillos en silencio). Guarda:
-  *si el platillo tiene `ingredients` → no se toca* (`update_dish` lo rechaza y manda al panel).
+  *si el platillo tiene `ingredients` → no se toca* (`update_dish` lo rechaza; la receta se cambia con `update_dish_recipe`).
 - `price` y `visible` son mapas por spot: `{"1": 2500}`, `{"1": 1}`. El precio del **platillo** se lee y escribe en **centavos**.
 - Precio de **opción** de modificador: se **escribe en centavos** (2000) y se **lee en pesos** (20).
 - Visibilidad en terminal = `spots[].visible`. El `hidden` de `getProducts` es otro flag: no derivar `visible` de `hidden`.
@@ -80,7 +80,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 - `finance.createTransactions`: `type` 0 gasto · 1 ingreso · 2 transferencia. Gasto usa `account_from`/`amount_from`;
   ingreso `account_to`/`amount_to`; transferencia ambos pares (`account_from`→`account_to`). La categoría va como `category` (el `category_id` de la herramienta), solo en gasto/ingreso.
 - ⚠ **Unidad del monto**: el servidor **envía pesos** (a diferencia de `create_supply`, que envía centavos); al LEER (`finance.getTransactions`)
-  trata los montos como **centavos**. Tras aplicar relee la transacción del día; si el monto quedó **100× desviado**, lo
+  trata los montos como **centavos**. Tras aplicar relee las transacciones entre la fecha de la transacción y hoy; si el monto quedó **100× desviado**, lo
   marca con `alerta_100x` y pide no reintentar.
 - `account_id`/`account_destino_id` = cuentas de `finance.getAccounts`; `category_id` = `finance.getCategories`. `date` = `YYYY-MM-DD HH:MM:SS` (hora de la zona `TIMEZONE`).
 

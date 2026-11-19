@@ -251,6 +251,11 @@ describe("delete_old_dish", () => {
     ["un spot oculto y otro sin visible", [{ spot_id: "1", visible: "0" }, { spot_id: "2" }]],
     ["visible con valor desconocido", [{ spot_id: "1", visible: "2" }]],
     ["spot nulo", [null]],
+    ["visible como lista", [{ spot_id: "1", visible: ["0"] }]],
+    ["visible como objeto", [{ spot_id: "1", visible: {} }]],
+    ["visible booleano true", [{ spot_id: "1", visible: true }]],
+    ["visible booleano false", [{ spot_id: "1", visible: false }]],
+    ["visible nulo", [{ spot_id: "1", visible: null }]],
   ];
   it.each(SIN_OCULTO_EXPLICITO)("rechaza borrar si no todos los spots están marcados como ocultos (%s), sin escribir", async (_caso, spots) => {
     const p: Obj = { ...old(), spots };
@@ -271,9 +276,39 @@ describe("delete_old_dish", () => {
     expect(r.modo).toBe("aplicado");
     expect(r.verificacion.ok).toBe(true);
   });
+  it.each([["texto", "0"], ["número", 0]])("borra si todos los spots tienen visible oculto como %s", async (_caso, visible) => {
+    const p = { ...old(), spots: [{ spot_id: "1", visible }, { spot_id: "2", visible }] };
+    const { api, db } = apiConEstado({ ...base(), "menu.getProducts": [p] });
+    const post = vi.fn(async (_c: string, _m: string, b: any) => { db["menu.getProducts"] = db["menu.getProducts"].filter((x: any) => Number(x.product_id) !== b.dish_id); return { response: true }; });
+    const r: any = await W.borrarPlatilloOld(ctx({ ...api, post: post as never }), { cuenta: "cafe-04", product_id: 892, confirm: true });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][1]).toBe("menu.removeDish");
+    expect(r.modo).toBe("aplicado");
+    expect(r.verificacion.ok).toBe(true);
+  });
+  it("rechaza visible numérico 1 como visible, sin escribir", async () => {
+    const p = { ...old(), spots: [{ spot_id: "1", visible: 0 }, { spot_id: "2", visible: 1 }] };
+    const { api, post } = apiConEstado({ ...base(), "menu.getProducts": [p] });
+    await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/sigue visible/);
+    expect(post).not.toHaveBeenCalled();
+  });
   it("otra cuenta sin flag bloqueada", async () => {
     const { api } = apiConEstado({ ...base(), "menu.getProducts": [old()] });
     await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-02", product_id: 892, confirm: true })).rejects.toThrow(/bloqueada/);
+  });
+});
+
+describe("update_dish sobre un platillo con receta", () => {
+  it("rechaza y remite a update_dish_recipe para la receta, sin escribir", async () => {
+    const { api, post } = apiConEstado(base());
+    const e: Error = await W.actualizarPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 892, visible: false, confirm: true }).then(
+      () => { throw new Error("no rechazó"); },
+      (x: Error) => x,
+    );
+    expect(e.message).toMatch(/tiene receta \(2 líneas\): updateDish la borraría/);
+    expect(e.message).toMatch(/update_dish_recipe/);
+    expect(e.message).not.toMatch(/panel/);
+    expect(post).not.toHaveBeenCalled();
   });
 });
 

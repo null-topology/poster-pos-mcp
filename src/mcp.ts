@@ -43,9 +43,9 @@ const escritura = {
 const LECTURA = { readOnlyHint: true, openWorldHint: true } as const;
 const ESCRITURA = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
 
-// No known token reaches the client. Results are redacted structurally (every string and key, never
-// numbers, booleans or null) and serialized once, so the text is always valid JSON. Errors are redacted
-// as text.
+// Known tokens are masked before a result reaches the client. Results are redacted structurally (every
+// string and key; a number only when its text equals a known digit-only token; never booleans or null)
+// and serialized once, so the text is always valid JSON. Errors are redacted as text.
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(redactarEstructura(data), null, 1) }] });
 const fallo = (e: unknown) => ({ isError: true, content: [{ type: "text" as const, text: redactar(String((e as Error)?.message ?? e)) }] });
 const envolver = <A>(fn: (a: A, extra: any) => Promise<unknown>) => async (a: A, extra: any) => {
@@ -334,7 +334,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       "finance.createTransactions: registra un gasto (type 0), ingreso (type 1) o transferencia (type 2). " +
       "Monto en PESOS (se envía en pesos, no en centavos). El account_id es la cuenta financiera (ver finance.getAccounts con poster_get); " +
       "category_id es obligatorio en gasto e ingreso (finance.getCategories) y no aplica a transferencias, que usan account_destino_id. " +
-      "Valida cuenta y categoría; tras aplicar relee finance.getTransactions del día y verifica monto, cuenta y categoría, avisando si el monto quedó 100× desviado. Dry-run por defecto.",
+      "Valida cuenta y categoría; tras aplicar relee finance.getTransactions entre la fecha de la transacción y hoy y verifica monto, cuenta y categoría, avisando si el monto quedó 100× desviado. Dry-run por defecto.",
     inputSchema: {
       cuenta: cuentaEscritura,
       tipo: z.enum(["gasto", "ingreso", "transferencia"]).describe("gasto = salida, ingreso = entrada, transferencia = entre cuentas"),

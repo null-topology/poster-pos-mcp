@@ -342,9 +342,9 @@ export async function actualizarPlatillo(
     const p = prods.find((x) => num(x.product_id) === a.product_id);
     if (!p) throw new Error(`Producto ${a.product_id} no existe en ${a.cuenta}`);
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2): updateDish no aplica.`);
-    // TRAMPA: updateDish es update COMPLETO y vacía la receta. Si la tiene, no se toca (la receta solo vive en el panel).
+    // TRAMPA: updateDish es update COMPLETO y vacía la receta. Si la tiene, no se toca (la receta se cambia con update_dish_recipe).
     if ((p.ingredients ?? []).length) {
-      throw new Error(`"${String(p.product_name).trim()}" tiene receta (${p.ingredients.length} líneas): updateDish la borraría. Edítalo en el panel web.`);
+      throw new Error(`"${String(p.product_name).trim()}" tiene receta (${p.ingredients.length} líneas): updateDish la borraría. La receta se cambia con update_dish_recipe.`);
     }
     if (a.categoria_id !== undefined) {
       const cats = await ctx.api.get<Obj[]>(a.cuenta, "menu.getCategories");
@@ -753,7 +753,8 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
 
 // ── delete_old_dish (menu.removeDish) ───────────────────────────────────────
 // Solo para liberar lugar del plan de Póster: el platillo debe estar OCULTO en todos los spots
-// y su nombre debe terminar en "(old)" (es decir, ya pasó por hide_dish). Las ventas históricas se conservan.
+// y su nombre debe terminar en "(old)" (el sufijo por defecto de hide_dish). La guarda revisa el tipo, el
+// nombre y los spots leídos; no sabe si se usó hide_dish. Las ventas históricas se conservan.
 export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { product_id: number }) {
   return ejecutar(ctx, a, async () => {
     const p = await leerProducto(ctx.api, a.cuenta, a.product_id);
@@ -761,10 +762,15 @@ export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { prod
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
     const nombre = String(p.product_name).trim();
     if (!/\(old\)$/i.test(nombre)) throw new Error(`"${nombre}" no termina en "(old)": primero ocúltalo con hide_dish.`);
-    // Fails closed: deleted only when every spot is read and explicitly hidden ("0", as hide_dish writes).
+    // Fails closed: deleted only when every spot is read and explicitly hidden ("0" or 0; hide_dish sends 0).
+    // Only a string or a number is a visibility value: an array, object, boolean or null is unknown.
+    const visibilidad = (s: unknown): string | undefined => {
+      const v = (s as Obj | null)?.visible;
+      return typeof v === "string" || typeof v === "number" ? String(v) : undefined;
+    };
     const spots: unknown[] = Array.isArray(p.spots) ? p.spots : [];
-    if (spots.some((s) => String((s as Obj | null)?.visible) === "1")) throw new Error(`"${nombre}" sigue visible en algún spot: no se borra.`);
-    if (!spots.length || !spots.every((s) => String((s as Obj | null)?.visible) === "0")) {
+    if (spots.some((s) => visibilidad(s) === "1")) throw new Error(`"${nombre}" sigue visible en algún spot: no se borra.`);
+    if (!spots.length || !spots.every((s) => visibilidad(s) === "0")) {
       throw new Error(`"${nombre}" no muestra todos sus spots como ocultos (visibilidad ausente o desconocida): no se borra.`);
     }
     const payload = { dish_id: a.product_id };
@@ -841,7 +847,7 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
 //   type 2 = transferencia → account_from/amount_from (origen) → account_to/amount_to (destino)
 //   category_id: obligatorio en gasto e ingreso; en transferencia no aplica.
 //   Amounts are sent in pesos (create_supply sends centavos) and read back from finance.getTransactions in centavos.
-//   After applying, the day's transactions are read back; if the amount is off by 100x,
+//   After applying, transactions between the transaction date and today are read back; if the amount is off by 100x,
 //   the result flags it with alerta_100x.
 // ════════════════════════════════════════════════════════════════════════════
 const TIPO_TX = { gasto: 0, ingreso: 1, transferencia: 2 } as const;
@@ -926,7 +932,7 @@ export async function crearTransaccion(
       }
     }
 
-    avisos.push("Montos enviados en PESOS (finance.createTransactions NO usa centavos, al revés que el resto de la API). Tras aplicar se relee en centavos; si queda 100× desviado, NO repitas: corrige en el panel y revisa la unidad.");
+    avisos.push("Montos enviados en PESOS (finance.createTransactions NO usa centavos, a diferencia de create_supply y create_dish). Tras aplicar se relee en centavos; si queda 100× desviado, NO repitas: corrige en el panel y revisa la unidad.");
 
     return {
       herramienta: "create_transaction",
@@ -957,7 +963,7 @@ export async function crearTransaccion(
         if (!Array.isArray(txns)) throw new Error("finance.getTransactions no devolvió una lista de transacciones.");
         const t = (txns as Obj[]).find((x) => num(x.transaction_id) === id);
         if (!t) {
-          return { ok: false, detalle: { transaction_id: id, alerta: "No se encontró la transacción al releer finance.getTransactions del día. Verifícala manualmente en el panel antes de reintentar." } };
+          return { ok: false, detalle: { transaction_id: id, alerta: "No se encontró la transacción al releer finance.getTransactions entre la fecha de la transacción y hoy. Verifícala manualmente en el panel antes de reintentar." } };
         }
         const leidoCent = montoTxnCentavos(t, a.tipo);
         const leidoPesos = pesos(leidoCent);

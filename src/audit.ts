@@ -13,7 +13,7 @@ export interface EventoAuditoria {
   cuenta: string;
   metodo: string;
   herramienta: string;
-  /** desconocido: the HTTP attempt of the write failed after it started, so it may have been applied. */
+  /** desconocido: the write may have been applied: its HTTP attempt failed after it started, Poster answered 5xx, or the reply had no error and no result. */
   modo: "dry-run" | "aplicado" | "rechazado" | "desconocido";
   payload: unknown;
   resultado?: unknown;

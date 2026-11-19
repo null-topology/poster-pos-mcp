@@ -1,4 +1,4 @@
-// Origen de tokens Póster. Nunca se registran ni se devuelven: solo los usa el cliente HTTP.
+// Origen de tokens Póster. Los usa el cliente HTTP; resultados, errores y auditoría los enmascaran con redactar/redactarEstructura (abajo).
 //   gsm   → Google Secret Manager, secreto `<SECRET_PREFIX><cuenta en minúsculas>` (versión latest)
 //   mysql → tabla poster_accounts de la DB local de erp-core (solo para dev en la Mac)
 //   env   → variable POSTER_TOKEN_<CUENTA>, validada al arrancar; sin GCP ni MySQL, cambia solo al reiniciar

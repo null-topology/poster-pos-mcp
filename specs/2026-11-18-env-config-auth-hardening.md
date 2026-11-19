@@ -10,12 +10,18 @@ Base revision: `50ceab4`.
    `hono` / `@hono/node-server`.
 2. Make every deployment-specific runtime value of the server readable from the environment, so it
    can run for any Poster network without code edits.
+3. Read Poster tokens from environment variables, so the server runs where configuration arrives
+   only through the environment (Unit 3).
+4. Report write outcomes accurately, keep the audit log valid and keep known tokens out of results,
+   errors and audit entries (Unit 4); delete an old dish only when every spot it reads is hidden
+   (Unit 7).
+5. English tool names and documentation that matches the code (Units 5 and 6).
 
-With no new environment variables set, runtime behaviour stays as it is today (same account list,
-same write target and write permissions, same timezone, same names), with one visible text change
-listed under Unit 2 and one changed `/health` value: with `TOKEN_SOURCE` blank, the `tokens` field
-now reports `gsm` instead of the empty string (GSM is the token source used in both cases).
-Existing tests are the control for that.
+Unit 2 on its own keeps runtime behaviour as it was when no new environment variables are set (same
+account list, same write target and write permissions, same timezone, same names), with one visible
+text change listed under Unit 2 and one changed `/health` value: with `TOKEN_SOURCE` blank, the
+`tokens` field now reports `gsm` instead of the empty string (GSM is the token source used in both
+cases). Units 1, 4, 5 and 7 change behaviour on purpose, as their sections describe.
 
 The work is split into units.
 
@@ -371,15 +377,17 @@ Write outcome and audit:
   verification throws, the result is `modo: "aplicado"` with
   `verificacion: { ok: false, detalle: <redacted error message> }` and a notice that the write was
   applied and must not be repeated. The audit entry is `aplicado` with the same `verificacion`.
-  Nothing is thrown. A read call that fails during read-back counts as a failed read-back, never
-  as "not found".
+  Nothing is thrown, and a verification that throws never counts as "not found". A read-back that
+  completes but does not match returns `verificacion.ok: false` with its own detail, without that
+  notice.
 - Unknown outcome: when the HTTP attempt of the write fails after it has started (network or DNS
   error, timeout, a reply that is not JSON, or a reply with HTTP status 500 or higher whatever its
   body), the request may have reached Poster. A write reply with no `error` (or `error: 0`) and
   neither a `response` nor `success: 1` is an unknown outcome too: nothing in it shows that the
-  write was rejected. A write reply with an `error` other than 0 stays `rechazado`. Both unknown
-  cases use a dedicated error class exported by `src/poster.ts`; its message carries the HTTP
-  status when there is one and, when it can be built, the redacted reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
+  write was rejected. A write reply with an `error` other than 0 or `null` stays `rechazado`. Both
+  unknown cases use a dedicated error class exported by `src/poster.ts`; its message carries the
+  HTTP status of a 5xx reply or of a reply that is not JSON and, when it can be built, the redacted
+  reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
   and the tool fails with a message that says the write may have been attempted and must be
   checked with a read before any retry. Every failure before the attempt starts (validation,
   permission, plan construction, token lookup, method check) stays `rechazado`; when a plan
@@ -403,6 +411,14 @@ Known limitations:
 - A digit-only secret placed in `POSTER_ACCOUNTS` by mistake appears in the derived variable name
   of the startup error.
 - Result formatting of an extremely deeply nested reply can fail after a write was applied.
+- A digit-only token too long to be held exactly by a JSON number is not matched when a reply
+  carries it as a number.
+- A write reply `{ response: null }` with no `error` counts as applied.
+- A `create_supply` read-back whose reply has no `supply_sum` reads the total as 0.
+- `leerProducto` falls back to `menu.getProducts` when `menu.getProduct` fails or does not return
+  the requested product, and treats an absent product list as empty, so a read-back that gets no
+  list reports the product as not found.
+- Below 500 the HTTP status of a JSON reply is not kept; the reply is classified by its body alone.
 
 ### Unit 4 acceptance
 
@@ -502,15 +518,15 @@ instructions and result fields stay as they are.
 - Calling an old name fails; calling the new name behaves as the old one did, including the
   audit `herramienta` value.
 - No tool-name reference to an old name remains in `src/`, `test/`, `scripts/`, the READMEs,
-  `DEPLOY_CLOUD_RUN.md` or this document, apart from the table above and the note on old audit
-  lines.
+  `DEPLOY_CLOUD_RUN.md` or this document, apart from the table above, the note on old audit
+  lines, and the test list of former names that checks none of them is served.
 - The suite, `tsc` and the wider check are clean.
 
 ## Unit 6: documentation accuracy
 
-Text-only. Statements in `README.md`, `README.es.md`, `DEPLOY_CLOUD_RUN.md` and the
-transaction-amount texts in `src/` are brought in line with what the code does. No behaviour
-changes.
+Text-only. Statements in `README.md`, `README.es.md`, `DEPLOY_CLOUD_RUN.md`, the
+transaction-amount texts in `src/`, the `poster_get` description and the `update_dish` refusal text
+are brought in line with what the code does. No behaviour changes.
 
 - Safety rules: the server enforces the account allow-list, the default write set, dry-run as the
   default and the per-write checks. Applying a write (`confirm: true`) and writing outside the
@@ -522,32 +538,66 @@ changes.
 - Tokens: every Poster request carries the token in the query string (Poster API design).
   Redaction covers the token values the server knows (all environment tokens from startup;
   GSM/MySQL tokens once loaded) in their literal, URL-encoded (uppercase or lowercase hex escapes)
-  and JSON-escaped forms, and a number equal to a known token made only of digits and at least 16
-  characters long. The docs
-  describe this instead of "never exposed".
-- Deletes: `delete_old_dish` deletes a dish through `menu.removeDish`, only for a dish whose name
-  ends in "(old)" and whose spots are all explicitly hidden (`visible` 0); a dish with no spots,
-  or with a spot whose visibility is missing or unknown, is refused. The docs no longer say there is no delete; tool lists include it and
-  `update_dish_recipe`.
+  and JSON-escaped forms, and any `token=` value. The docs describe this instead of "never
+  exposed".
+- Write outcome: the docs describe the outcomes of Unit 4. The no-repeat notice comes with a
+  read-back that fails; a read-back that completes but does not match gives
+  `verificacion.ok: false` with its own detail.
+- Deletes: the docs no longer say there is no delete; they describe the guard of Unit 7, and tool
+  lists include `delete_old_dish` and `update_dish_recipe`.
+- `update_dish` refusal: for a dish with a recipe, the refusal names `update_dish_recipe` for the
+  recipe instead of the web panel.
 - Transaction amounts: `create_transaction` sends the amount in pesos. Its description, the
   `monto` parameter text, the header comment in `src/tools/escritura.ts` and `README.es.md` say
-  pesos. Other unit statements are checked against the code and corrected only where the code
+  pesos; `README.es.md` contrasts it with `create_supply` and `create_dish`, which send centavos,
+  and it and the header comment say the read-back covers the transaction date to today. Other unit
+  statements are checked against the code and corrected only where the code
   contradicts them.
-- `poster_get` output is cut at 60 000 characters, not bytes.
+- `poster_get` output is cut at 60 000 characters, not bytes; its description says so.
 - `DEPLOY_CLOUD_RUN.md`: each refresh issues a new refresh token, so a connection has no absolute
   end; rotating the OAuth signing key revokes OAuth-issued tokens only, and the static bearer
-  (`MCP_BEARER_TOKEN`) is rotated separately.
+  (`MCP_BEARER_TOKEN`) is rotated separately. Both rotation commands name the project, and the
+  configuration is read once at startup, so rotated keys take effect in instances started after
+  the redeploy.
 
 ### Unit 6 acceptance
 
 - Each statement above is true of the code, with the line it rests on.
-- `src/` changes are limited to the transaction-amount description strings and comments.
+- `src/` changes are limited to the transaction-amount description strings, the `poster_get`
+  description, the `update_dish` refusal text and comments.
+- The suite, `tsc` and the wider check are clean.
+
+## Unit 7: delete guard
+
+`delete_old_dish` deletes a dish through `menu.removeDish`. It reads the product first, in dry-run
+and with `confirm: true`, and refuses without writing unless:
+
+- the product is a dish (type 2) and its name ends in "(old)";
+- `spots` is a non-empty list and the `visible` of every spot is the string `"0"` or the number
+  `0`. A spot whose `visible` is `"1"` or `1` is refused as visible. Any other value or type
+  (missing, `null`, a boolean, an array such as `["0"]`, an object, another string) is refused as
+  unknown.
+
+The guard checks the product it reads (type, name and spots); it does not know whether `hide_dish`
+was used (`hide_dish` sends `visible` 0 and, by default, the suffix " (old)"). After the write, the read-back checks that the dish no
+longer appears in `menu.getProducts`.
+
+### Unit 7 acceptance
+
+With a faked Poster API, no network:
+
+- A dish with no spots, an empty or non-list `spots`, a `null` spot, a spot without `visible`, or a
+  `visible` of `"2"`, `["0"]`, `{}`, `true`, `false` or `null` is refused in dry-run and with
+  `confirm: true`; nothing is sent.
+- A spot with `visible` `"1"` or `1` is refused as visible; nothing is sent.
+- A dish whose spots all have `visible` `"0"`, or all `0`, is deleted with `menu.removeDish` and
+  its read-back is ok.
 - The suite, `tsc` and the wider check are clean.
 
 ## Exclusions and known limitations
 
-- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish` beyond its
-  hidden-spot check), `poster_get`
+- Write-tool semantics (dry-run, `permitir_otra_cuenta`, `delete_old_dish` beyond the guard of
+  Unit 7), `poster_get`
   method scope, refresh-token lifetime and revocation, DCR loopback redirects. These are
   known weaknesses outside this change.
 - `/health`: no change to its fields or disclosure policy beyond the service name value, the
@@ -559,7 +609,7 @@ changes.
 - `FINANZAS_ENV_PATH` keeps its default path.
 - Business-specific copy and assumptions stay: milk warnings in dish creation, "pesos" labels, and
   the spot 1 / workshop 1 fallbacks in dish updates.
-- Internal constants stay in code: token cache TTL, fetch timeout, 60 KB truncation, rate-limit
+- Internal constants stay in code: token cache TTL, fetch timeout, 60 000-character truncation, rate-limit
   numbers, token lifetimes.
 - Translating Spanish texts other than tool names: descriptions, parameter names, instructions,
   result fields, error texts and code identifiers stay in Spanish.
