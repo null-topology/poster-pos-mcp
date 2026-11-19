@@ -1,11 +1,11 @@
 // Herramientas de ESCRITURA. Reglas comunes:
 //   · dry-run por defecto: arma el payload, lee el estado actual y devuelve el diff SIN escribir.
 //   · confirm: true aplica, lee de vuelta y verifica.
-//   · Solo cuentas de WRITE_DEFAULT_ACCOUNTS (cafe-04); otra cuenta exige permitir_otra_cuenta: true.
+//   · Solo cuentas de WRITE_DEFAULT_ACCOUNTS; otra cuenta exige permitir_otra_cuenta: true.
 //   · Todo (dry-run, aplicado o rechazado) queda en auditoría sin token.
 import type { PosterApi, PosterRespuesta } from "../poster.js";
 import { errorPoster } from "../poster.js";
-import { verificarEscritura } from "../config.js";
+import { config, verificarEscritura } from "../config.js";
 import { auditar } from "../audit.js";
 import { centavos, diff, fechaPoster, hoyMx, norm, num, pesos, unidadReceta, type Cambio } from "../util.js";
 
@@ -210,7 +210,7 @@ export async function crearCompra(
     if (a.comentario && sups.some((s) => String(s.delete) !== "1" && norm(s.supply_comment) === norm(a.comentario))) {
       avisos.push(`Ya hay una compra con el comentario "${a.comentario}": ¿duplicada?`);
     }
-    const fecha = a.fecha ?? new Date().toLocaleString("sv-SE", { timeZone: "America/Merida" }).slice(0, 19);
+    const fecha = a.fecha ?? new Date().toLocaleString("sv-SE", { timeZone: config.timezone }).slice(0, 19);
     // Contrato (probe_supply_final.mjs): multipart con `ingredients` como JSON string.
     // `sum` = costo POR UNIDAD en centavos (la lista getSupplies también viene en centavos).
     const lineas = renglones.map(({ l, tipo }) => ({ id: l.id, type: TIPO_RENGLON[tipo], num: l.cantidad, sum: centavos(l.costo_unitario) }));
@@ -830,7 +830,7 @@ export async function crearTransaccion(
     account_destino_id?: number;
     category_id?: number;
     comentario?: string;
-    fecha?: string; // YYYY-MM-DD [HH:MM:SS], hora de Carmen (America/Merida)
+    fecha?: string; // YYYY-MM-DD [HH:MM:SS], hora local de TIMEZONE
     user_id?: number;
   },
 ) {
@@ -853,7 +853,7 @@ export async function crearTransaccion(
     const origen = nombreCuenta(a.account_id);
     const fecha = a.fecha
       ? (a.fecha.length <= 10 ? `${a.fecha} 00:00:00` : a.fecha)
-      : new Date().toLocaleString("sv-SE", { timeZone: "America/Merida" }).slice(0, 19);
+      : new Date().toLocaleString("sv-SE", { timeZone: config.timezone }).slice(0, 19);
 
     const avisos: string[] = [];
     // Contrato real de finance.createTransactions: `type` es OBLIGATORIO (si falta → error 34 "type is undefined");

@@ -5,6 +5,7 @@ import path from "node:path";
 export default defineConfig({
   test: {
     testTimeout: 120_000,
+    setupFiles: ["test/setup-entorno.ts"],
     env: {
       AUDIT_DIR: path.join(os.tmpdir(), "poster-mcp-test-audit"),
       PUBLIC_BASE_URL: "http://localhost:3210",

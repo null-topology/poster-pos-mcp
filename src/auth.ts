@@ -2,8 +2,10 @@
 //   1. Bearer estático (MCP_BEARER_TOKEN) → para Claude Code, curl y pruebas.
 //   2. OAuth 2.1 mínimo (DCR + authorization code + PKCE S256 + refresh) → lo que pide un conector
 //      personalizado de claude.ai. Es de un solo dueño: la pantalla de autorización pide OWNER_PASSPHRASE.
-//      Sin estado: client_id, code y tokens son JWT HS256 firmados con OAUTH_SIGNING_KEY
-//      (rotar la llave revoca todo de golpe).
+//      Sin estado: client_id, code y tokens son JWT HS256 firmados con OAUTH_SIGNING_KEY.
+//      Rotar la llave invalida de golpe solo lo emitido por OAuth; el bearer estático MCP_BEARER_TOKEN
+//      sigue valiendo y se rota aparte. Los 30 días son la vigencia de un token de refresh: cada
+//      refresh emite uno nuevo, así que una autorización no tiene fin absoluto.
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
@@ -22,7 +24,8 @@ async function firmar(payload: Record<string, unknown>, typ: string, exp: string
   return new SignJWT({ ...payload, typ }).setProtectedHeader({ alg: "HS256" }).setIssuer(config.publicBaseUrl).setIssuedAt().setJti(randomUUID()).setExpirationTime(exp).sign(llave());
 }
 async function verificar(token: string, typ: string) {
-  const { payload } = await jwtVerify(token, llave(), { issuer: config.publicBaseUrl });
+  // Pinned to what firmar() produces: without it jose accepts any HMAC algorithm that fits the key.
+  const { payload } = await jwtVerify(token, llave(), { issuer: config.publicBaseUrl, algorithms: ["HS256"] });
   if (payload.typ !== typ) throw new Error("tipo de token inválido");
   return payload;
 }
@@ -39,40 +42,65 @@ const redirectPermitido = (uri: string) => {
 
 const resourceMetadataUrl = () => `${config.publicBaseUrl}/.well-known/oauth-protected-resource`;
 
-// Códigos de un solo uso y freno a fuerza bruta (por instancia, en memoria)
+// Códigos de un solo uso (por instancia, en memoria). The passphrase rate limit lives in rutasOAuth().
 const codigosUsados = new Map<string, number>();
-const fallos = new Map<string, { n: number; desde: number }>();
-const bloqueado = (ip: string) => {
-  const f = fallos.get(ip);
-  return !!f && Date.now() - f.desde < 15 * 60_000 && f.n >= 5;
-};
-const registrarFallo = (ip: string) => {
-  const f = fallos.get(ip);
-  if (!f || Date.now() - f.desde > 15 * 60_000) fallos.set(ip, { n: 1, desde: Date.now() });
-  else f.n++;
-};
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const ipDe = (c: Context) => c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+/**
+ * Raw X-Forwarded-For, logged only and never used for a decision. Proxies append to the end of the
+ * header, so the last 200 characters keep what the front end added even when a client pads the start.
+ */
+const xffDelHeader = (c: Context) => c.req.header("x-forwarded-for")?.slice(-200);
 
-function pagina(campos: Record<string, string>, error = "") {
-  const ocultos = Object.entries(campos).map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join("");
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>poster-rush · autorizar</title><style>
+// Inlined verbatim between <style> and </style>; the CSP allows exactly this text by its hash.
+const ESTILO = `
 body{font-family:system-ui,sans-serif;background:#f6f3ee;color:#1d1b18;margin:0;display:grid;place-items:center;min-height:100vh}
 form{background:#fff;padding:28px 22px;border-radius:14px;max-width:360px;width:calc(100% - 32px);box-shadow:0 2px 12px #0001}
 h1{font-size:20px;margin:0 0 6px}p{font-size:14px;color:#5b554c;margin:0 0 18px}
 input[type=password]{width:100%;box-sizing:border-box;font-size:17px;padding:12px;border:1px solid #cfc7bb;border-radius:9px}
 button{margin-top:14px;width:100%;font-size:17px;padding:12px;border:0;border-radius:9px;background:#1d1b18;color:#fff}
-.err{color:#b3261e;font-size:14px;margin-top:10px}</style></head><body>
+.err{color:#b3261e;font-size:14px;margin-top:10px}`;
+// No form-action: it does not fall back to default-src, and some browsers would apply it to the
+// redirect that follows the form post, blocking the callback to the client.
+const CSP = `default-src 'none'; style-src 'sha256-${createHash("sha256").update(ESTILO).digest("base64")}'; frame-ancestors 'none'; base-uri 'none'`;
+
+/** OAuth request fields the page carries as hidden inputs. Nothing else that was posted is ever rendered. */
+const CAMPOS_OAUTH = ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "scope", "resource", "client_name"] as const;
+
+function pagina(campos: Record<string, string>, error = "") {
+  const ocultos = CAMPOS_OAUTH.map((k) => `<input type="hidden" name="${esc(k)}" value="${esc(campos[k] ?? "")}">`).join("");
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(config.serviceName)} · autorizar</title><style>${ESTILO}</style></head><body>
 <form method="post" action="/authorize">${ocultos}
-<h1>Conectar poster-rush</h1><p>Un cliente (${esc(campos.client_name || "claude.ai")}) pide acceso a las cuentas Póster de la red RUSH.</p>
+<h1>Conectar ${esc(config.serviceName)}</h1><p>Un cliente (${esc(campos.client_name || "claude.ai")}) pide acceso a las cuentas Póster de la red ${esc(config.networkName)}.</p>
 <input type="password" name="passphrase" placeholder="Frase de acceso" autocomplete="current-password" required autofocus>
 <button type="submit">Autorizar</button>${error ? `<div class="err">${esc(error)}</div>` : ""}</form></body></html>`;
 }
 
+/** Every HTML response of /authorize: not framable, not cacheable, and only the inlined style allowed. */
+const responderPagina = (c: Context, html: string, status: 200 | 401 | 429 = 200) => {
+  c.header("X-Frame-Options", "DENY");
+  c.header("Content-Security-Policy", CSP);
+  c.header("Cache-Control", "no-store");
+  return c.html(html, status);
+};
+
 export function rutasOAuth() {
   const r = new Hono();
+
+  // Passphrase brute-force limit: one counter per app instance, shared by every client. The first
+  // failure with no open window opens a 15-minute window; at 5 failures passphrase checks are locked
+  // until that window ends. Locked requests neither count nor extend it; a success resets it.
+  // The window is measured on the wall clock (Date.now()): a step of the host clock shortens or
+  // lengthens the current window. This is intentional: the limit is a brake, not a precise timer.
+  const VENTANA_MS = 15 * 60_000, MAX_FALLOS = 5;
+  const freno = { fallos: 0, desde: 0 };
+  const ventanaAbierta = () => freno.fallos > 0 && Date.now() - freno.desde < VENTANA_MS;
+  const bloqueado = () => ventanaAbierta() && freno.fallos >= MAX_FALLOS;
+  const registrarFallo = () => {
+    if (ventanaAbierta()) freno.fallos++;
+    else Object.assign(freno, { fallos: 1, desde: Date.now() });
+  };
 
   const prm = (c: Context) =>
     c.json({ resource: `${config.publicBaseUrl}/mcp`, authorization_servers: [config.publicBaseUrl], bearer_methods_supported: ["header"], scopes_supported: ["poster"] });
@@ -117,7 +145,7 @@ export function rutasOAuth() {
     try {
       const cli = await validarSolicitud(q);
       const campos = { response_type: q.response_type, client_id: q.client_id, redirect_uri: q.redirect_uri, code_challenge: q.code_challenge, code_challenge_method: q.code_challenge_method, state: q.state ?? "", scope: q.scope ?? "", resource: q.resource ?? "", client_name: String(cli.n ?? "") };
-      return c.html(pagina(campos));
+      return responderPagina(c, pagina(campos));
     } catch (e) {
       return c.text(`Solicitud inválida: ${(e as Error).message}`, 400);
     }
@@ -126,30 +154,36 @@ export function rutasOAuth() {
   r.post("/authorize", async (c) => {
     if (!oauthActivo()) return c.text("OAuth deshabilitado", 503);
     const f = Object.fromEntries(Object.entries(await c.req.parseBody()).map(([k, v]) => [k, String(v)]));
-    const ip = ipDe(c);
+    const xff = xffDelHeader(c);
+    let cli: Awaited<ReturnType<typeof validarSolicitud>>;
     try {
-      await validarSolicitud(f);
+      cli = await validarSolicitud(f);
     } catch (e) {
       return c.text(`Solicitud inválida: ${(e as Error).message}`, 400);
     }
-    if (bloqueado(ip)) return c.html(pagina(f, "Demasiados intentos. Espera 15 minutos."), 429);
-    if (!igual(f.passphrase ?? "", config.ownerPassphrase)) {
-      registrarFallo(ip);
-      console.log(JSON.stringify({ severity: "WARNING", auth: "passphrase_incorrecta", ip }));
-      return c.html(pagina(f, "Frase incorrecta."), 401);
+    // The client name shown and logged is the one in the validated registration, never the posted one.
+    const campos = { ...f, client_name: String(cli.n ?? "") };
+    if (bloqueado()) {
+      console.log(JSON.stringify({ severity: "WARNING", auth: "bloqueado", xff }));
+      return responderPagina(c, pagina(campos, "Demasiados intentos. Espera 15 minutos."), 429);
     }
-    fallos.delete(ip);
+    if (!igual(f.passphrase ?? "", config.ownerPassphrase)) {
+      registrarFallo();
+      console.log(JSON.stringify({ severity: "WARNING", auth: "passphrase_incorrecta", xff }));
+      return responderPagina(c, pagina(campos, "Frase incorrecta."), 401);
+    }
+    freno.fallos = 0;
     const code = await firmar({ cid: createHash("sha256").update(f.client_id).digest("hex"), ru: f.redirect_uri, cc: f.code_challenge }, "code", "5m");
     const destino = new URL(f.redirect_uri);
     destino.searchParams.set("code", code);
     if (f.state) destino.searchParams.set("state", f.state);
-    console.log(JSON.stringify({ severity: "NOTICE", auth: "autorizado", cliente: f.client_name, ip }));
+    console.log(JSON.stringify({ severity: "NOTICE", auth: "autorizado", cliente: campos.client_name, xff }));
     return c.redirect(destino.toString(), 302);
   });
 
   const emitir = async (cidHash: string) => ({
-    access_token: await firmar({ sub: "roy", cid: cidHash }, "access", "1h"),
-    refresh_token: await firmar({ sub: "roy", cid: cidHash }, "refresh", "30d"),
+    access_token: await firmar({ sub: config.oauthSubject, cid: cidHash }, "access", "1h"),
+    refresh_token: await firmar({ sub: config.oauthSubject, cid: cidHash }, "refresh", "30d"),
     token_type: "Bearer",
     expires_in: 3600,
     scope: "poster",

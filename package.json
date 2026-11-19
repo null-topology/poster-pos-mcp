@@ -2,7 +2,7 @@
   "name": "poster-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP remoto poster-rush: lectura y escritura controlada de las cuentas P\u00f3ster POS de la red RUSH",
+  "description": "MCP remoto poster-rush: lectura y escritura controlada de las cuentas Póster POS de la red RUSH",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -17,9 +17,9 @@
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^7.2.0",
-    "@hono/node-server": "^2.1.5",
+    "@hono/node-server": "^2.1.9",
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "hono": "^4.13.13",
+    "hono": "^4.13.19",
     "jose": "^6.2.12",
     "zod": "^4.6.7"
   },

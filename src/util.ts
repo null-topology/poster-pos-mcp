@@ -1,4 +1,5 @@
-// Utilidades puras (sin red): conversión de importes, normalización y diff. Se prueban sin Póster.
+// Utilidades sin red: conversión de importes, normalización, diff y la fecha de hoy en TIMEZONE (config). Se prueban sin Póster.
+import { config } from "./config.js";
 
 export const num = (v: unknown, def = 0): number => {
   const n = Number(v);
@@ -14,8 +15,8 @@ export const norm = (s: unknown) =>
 
 export const coincide = (texto: unknown, buscar?: string) => !buscar || norm(texto).includes(norm(buscar));
 
-/** Hoy en la zona de la red (Ciudad del Carmen = America/Merida), YYYY-MM-DD. */
-export const hoyMx = (d = new Date()) => d.toLocaleDateString("en-CA", { timeZone: "America/Merida" });
+/** Hoy en la zona de la red (TIMEZONE), YYYY-MM-DD. */
+export const hoyMx = (d = new Date()) => d.toLocaleDateString("en-CA", { timeZone: config.timezone });
 
 /** Promoción vigente: date_end vacío/0000-00-00 o ≥ hoy. */
 export function promoVigente(dateEnd: unknown, hoy = hoyMx()): boolean {

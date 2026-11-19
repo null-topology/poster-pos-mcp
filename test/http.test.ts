@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 
-let app: { request: (input: string, init?: RequestInit) => Promise<Response> };
+let app: { request: (input: string, init?: RequestInit) => Response | Promise<Response> };
 const BEARER = "b".repeat(64);
 const FRASE = "frase-de-prueba-larga";
 

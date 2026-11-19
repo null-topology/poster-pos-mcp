@@ -1,4 +1,4 @@
-// poster-rush · servidor MCP remoto (Hono + Streamable HTTP, modo sin estado).
+// Servidor MCP remoto (Hono + Streamable HTTP, modo sin estado); su nombre viene de SERVICE_NAME.
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -10,8 +10,8 @@ import { exigirAuth, oauthActivo, rutasOAuth } from "./auth.js";
 export function crearApp() {
   const app = new Hono<{ Variables: { auth: AuthInfo } }>();
 
-  app.get("/health", (c) => c.json({ ok: true, servicio: "poster-rush", tokens: config.tokenSource, oauth: oauthActivo() }));
-  app.get("/", (c) => c.text("poster-rush MCP · endpoint: /mcp"));
+  app.get("/health", (c) => c.json({ ok: true, servicio: config.serviceName, tokens: config.tokenSource, oauth: oauthActivo() }));
+  app.get("/", (c) => c.text(`${config.serviceName} MCP · endpoint: /mcp`));
   app.route("/", rutasOAuth());
 
   app.use("/mcp", exigirAuth);
@@ -36,7 +36,7 @@ if (process.env.VITEST === undefined) {
     process.exit(1);
   }
   const srv = serve({ fetch: crearApp().fetch, port: config.port, hostname: "0.0.0.0" }, (i) =>
-    console.log(`poster-rush MCP escuchando en :${i.port} · tokens=${config.tokenSource} · oauth=${oauthActivo()} · base=${config.publicBaseUrl}`),
+    console.log(`${config.serviceName} MCP escuchando en :${i.port} · tokens=${config.tokenSource} · oauth=${oauthActivo()} · base=${config.publicBaseUrl}`),
   );
   // Anti-invasión de puertos: si el puerto está ocupado, salir (no buscar otro)
   srv.on("error", (e: NodeJS.ErrnoException) => {

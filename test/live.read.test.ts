@@ -1,4 +1,8 @@
-// Tests EN VIVO contra cafe-04: lecturas reales + dry-run de cada escritura.
+// Tests EN VIVO contra cafe-04: una parte de las lecturas reales + dry-run de algunas escrituras.
+// Requiere cafe-04 y cafe-01 en POSTER_ACCOUNTS; las demás cuentas no se usan. cafe-04 debe tener datos
+// reales (las lecturas de abajo esperan menú, insumos, precocinados, empleados, compras, etc.) y es la
+// única que se escribe por defecto: vitest.config.ts fija WRITE_DEFAULT_ACCOUNTS=cafe-04 por encima del
+// shell y del .env. cafe-01 debe estar en la lista y la prueba espera que se bloquee.
 // El cliente envuelve posterHttp y REVIENTA si alguien intenta escribir: aquí nada se aplica.
 // Correr con: npm run test:live   (requiere TOKEN_SOURCE=mysql y la DB erp-core-db arriba, o GSM)
 import { describe, it, expect } from "vitest";

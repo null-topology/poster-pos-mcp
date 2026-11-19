@@ -1,21 +1,44 @@
 // Registro de herramientas en el servidor MCP.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { CUENTAS } from "./config.js";
+import { config, CUENTAS } from "./config.js";
 import { posterHttp, type PosterApi } from "./poster.js";
 import { auditoriaReciente } from "./audit.js";
 import { redactar } from "./tokens.js";
 import * as L from "./tools/lectura.js";
 import * as W from "./tools/escritura.js";
 
-const cuenta = z.enum(CUENTAS).describe("Cuenta Póster de la red RUSH");
-const cuentaEscritura = z.enum(CUENTAS).default("cafe-04").describe("Cuenta destino (por defecto cafe-04)");
+// Names, accounts and the timezone in these texts come from the configuration (src/config.ts).
+const { ownerName, networkName, defaultWriteAccount } = config;
+/** Accounts writable without permitir_otra_cuenta, in account-list order. */
+const escribibles = [...config.writeDefault].join(", ");
+const horaLocal = config.timezonePlace ?? config.timezone;
+const horaLocalConZona = config.timezonePlace ? `${config.timezonePlace} (${config.timezone})` : config.timezone;
+
+const cuenta = z.enum(CUENTAS).describe(`Cuenta Póster de la red ${networkName}`);
+// Without DEFAULT_WRITE_ACCOUNT, every write tool requires `cuenta`. A target outside
+// WRITE_DEFAULT_ACCOUNTS is allowed, but writes to it still need permitir_otra_cuenta: true.
+const cuentaEscritura =
+  defaultWriteAccount === undefined
+    ? z.enum(CUENTAS).describe("Cuenta destino (obligatoria: no hay cuenta por defecto)")
+    : z
+        .enum(CUENTAS)
+        .default(defaultWriteAccount)
+        .describe(
+          config.writeDefault.has(defaultWriteAccount)
+            ? `Cuenta destino (por defecto ${defaultWriteAccount})`
+            : `Cuenta destino (por defecto ${defaultWriteAccount}; escribir en ella requiere permitir_otra_cuenta: true)`,
+        );
 const escritura = {
   confirm: z.boolean().default(false).describe("false = dry-run (solo muestra el diff). true = aplica el cambio."),
   permitir_otra_cuenta: z
     .boolean()
     .default(false)
-    .describe("Requerido en true para escribir en una cuenta distinta de cafe-04. Solo con autorización explícita de Roy."),
+    .describe(
+      escribibles
+        ? `Requerido en true para escribir en una cuenta distinta de ${escribibles}. Solo con autorización explícita de ${ownerName}.`
+        : `Requerido en true para escribir en cualquier cuenta. Solo con autorización explícita de ${ownerName}.`,
+    ),
 };
 const LECTURA = { readOnlyHint: true, openWorldHint: true } as const;
 const ESCRITURA = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
@@ -31,12 +54,15 @@ const envolver = <A>(fn: (a: A, extra: any) => Promise<unknown>) => async (a: A,
 };
 
 export function crearServidorMcp(api: PosterApi = posterHttp) {
-  const s = new McpServer({ name: "poster-rush", version: "0.2.0" }, {
+  const s = new McpServer({ name: config.serviceName, version: "0.2.0" }, {
     instructions:
-      "Herramientas para leer y configurar las cuentas Póster POS de la red RUSH Café. " +
-      "Lecturas en cualquier cuenta de la lista blanca. Escrituras: siempre primero en dry-run (confirm:false), mostrar el diff a Roy, " +
-      "y solo aplicar con confirm:true tras su OK. Por defecto solo cafe-04; otra cuenta requiere permitir_otra_cuenta:true y autorización explícita. " +
-      "Productos fuera de carta se OCULTAN (ocultar_platillo); solo se borran con borrar_platillo_old si Roy lo pide para liberar lugar del plan. Platillos nuevos con receta: crear_platillo. actualizar_platillo no toca platillos con receta; permisos de puestos solo en panel web.",
+      `Herramientas para leer y configurar las cuentas Póster POS de la red ${networkName}. ` +
+      `Lecturas en cualquier cuenta de la lista blanca. Escrituras: siempre primero en dry-run (confirm:false), mostrar el diff a ${ownerName}, ` +
+      "y solo aplicar con confirm:true tras su OK. " +
+      (escribibles
+        ? `Por defecto solo ${escribibles}; otra cuenta requiere permitir_otra_cuenta:true y autorización explícita. `
+        : "Ninguna cuenta se escribe por defecto; toda escritura requiere permitir_otra_cuenta:true y autorización explícita. ") +
+      `Productos fuera de carta se OCULTAN (ocultar_platillo); solo se borran con borrar_platillo_old si ${ownerName} lo pide para liberar lugar del plan. Platillos nuevos con receta: crear_platillo. actualizar_platillo no toca platillos con receta; permisos de puestos solo en panel web.`,
   });
   const ctx = (extra: any): W.Contexto => ({
     api,
@@ -156,7 +182,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       cuenta: cuentaEscritura,
       storage_id: z.number().int(),
       supplier_id: z.number().int(),
-      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).optional().describe("YYYY-MM-DD HH:MM:SS (hora de Carmen). Por defecto ahora."),
+      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/).optional().describe(`YYYY-MM-DD HH:MM:SS (hora de ${horaLocal}). Por defecto ahora.`),
       comentario: z.string().optional().describe("Ej. 'Ticket 51946'. Se usa para detectar duplicados."),
       account_id: z.number().int().optional().describe("Cuenta de Finanzas que paga la compra al momento (finance.getAccounts). Si se omite, la compra queda a crédito."),
       renglones: z.array(z.object({ id: z.number().int(), tipo: z.enum(["insumo", "producto", "modificador"]).optional(), cantidad: z.number().positive(), costo_unitario: z.number().min(0) })).min(1),
@@ -284,7 +310,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     title: "Borrar platillo (old) para liberar lugar",
     description:
       "menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en \"(old)\" (pasaron por ocultar_platillo). " +
-      "Úsalo únicamente cuando Roy pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.",
+      `Úsalo únicamente cuando ${ownerName} pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.`,
     inputSchema: { cuenta: cuentaEscritura, product_id: z.number().int(), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.borrarPlatilloOld(ctx(extra), a)));
@@ -314,7 +340,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       account_destino_id: z.number().int().optional().describe("Solo transferencias: cuenta financiera destino"),
       category_id: z.number().int().optional().describe("Categoría financiera (finance.getCategories). Obligatoria en gasto e ingreso; se ignora en transferencias"),
       comentario: z.string().optional(),
-      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/).optional().describe("YYYY-MM-DD [HH:MM:SS], hora de Carmen (America/Merida). Por defecto ahora."),
+      fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/).optional().describe(`YYYY-MM-DD [HH:MM:SS], hora de ${horaLocalConZona}. Por defecto ahora.`),
       user_id: z.number().int().optional().describe("Empleado que registra la operación (opcional)"),
       ...escritura,
     },
