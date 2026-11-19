@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Servidor MCP remoto (Hono + Streamable HTTP, modo sin estado); su nombre viene de SERVICE_NAME.
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";

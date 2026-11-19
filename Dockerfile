@@ -1,11 +1,10 @@
 # poster-rush MCP · imagen para Cloud Run
 FROM node:24-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-COPY tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+# npm ci builds dist through the prepare script
+RUN npm ci && npm prune --omit=dev
 
 FROM node:24-slim
 ENV NODE_ENV=production TOKEN_SOURCE=gsm AUDIT_DIR=/tmp/audit
