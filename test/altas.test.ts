@@ -237,10 +237,27 @@ describe("delete_old_dish", () => {
   it("rechaza visibles o sin sufijo (old)", async () => {
     const { api, post } = apiConEstado(base());
     await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/no termina en/);
+    expect(post).not.toHaveBeenCalled();
     const p = { ...old(), spots: [{ spot_id: "1", visible: "1" }] };
     const b = apiConEstado({ ...base(), "menu.getProducts": [p] });
     await expect(W.borrarPlatilloOld(ctx(b.api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/sigue visible/);
+    expect(b.post).not.toHaveBeenCalled();
+  });
+  it("rechaza un nombre con (old) que no está al final, sin escribir", async () => {
+    const p = { ...old(), product_name: "Pumpkin Spice Latte (old) receta nueva" };
+    const { api, post } = apiConEstado({ ...base(), "menu.getProducts": [p] });
+    await expect(W.borrarPlatilloOld(ctx(api), { cuenta: "cafe-04", product_id: 892, confirm: true })).rejects.toThrow(/no termina en/);
     expect(post).not.toHaveBeenCalled();
+  });
+  it("borra si los spots ocultos mezclan visible 0 numérico y \"0\" de texto", async () => {
+    const p = { ...old(), spots: [{ spot_id: "1", visible: 0 }, { spot_id: "2", visible: "0" }] };
+    const { api, db } = apiConEstado({ ...base(), "menu.getProducts": [p] });
+    const post = vi.fn(async (_c: string, _m: string, b: any) => { db["menu.getProducts"] = db["menu.getProducts"].filter((x: any) => Number(x.product_id) !== b.dish_id); return { response: true }; });
+    const r: any = await W.borrarPlatilloOld(ctx({ ...api, post: post as never }), { cuenta: "cafe-04", product_id: 892, confirm: true });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0].slice(0, 3)).toEqual(["cafe-04", "menu.removeDish", { dish_id: 892 }]);
+    expect(r.modo).toBe("aplicado");
+    expect(r.verificacion.ok).toBe(true);
   });
   const SIN_OCULTO_EXPLICITO: Array<[string, unknown]> = [
     ["sin spots", undefined],

@@ -294,6 +294,6 @@ export async function posterGet(api: PosterApi, a: { cuenta: string; metodo: str
   if (!METODO_LECTURA.test(a.metodo)) throw new Error("Solo se permiten métodos de lectura <modulo>.get*");
   const r = await api.get(a.cuenta, a.metodo, a.params ?? {});
   const texto = JSON.stringify(r);
-  // Redacted before it is clipped, so a token across the limit leaves no prefix.
+  // Redacted before it is clipped, so a token across the limit leaves no prefix; `bytes` counts the unredacted text.
   return { cuenta: a.cuenta, metodo: a.metodo, bytes: texto.length, respuesta: texto.length > 60_000 ? `${redactar(texto).slice(0, 60_000)}… (truncado)` : r };
 }

@@ -295,7 +295,8 @@ dependency at runtime.
   `<ACCOUNT>` is the account name upper-cased with `-` replaced by `_` (for example
   `POSTER_TOKEN_CAFE_04`). The account alphabet has no `_`, so the mapping is one-to-one.
 - The loader validates the tokens at startup: each value is trimmed, and the trimmed value must
-  match `^[A-Za-z0-9:._~-]{16,}$` (Poster tokens look like `<account id>:<hex>`). A missing or blank
+  match `^[A-Za-z0-9:._~-]{16,}$` (an `<account id>:<hex>` token fits; that shape is an example,
+  not a verified Poster token format). A missing or blank
   variable, or a trimmed value outside that format (whitespace, control characters, quotes,
   backslashes, `%`, `&`, `=`, or fewer than 16 characters), fails startup. The format keeps tokens
   recognizable for redaction in every representation the server produces. The error lists the
@@ -362,8 +363,10 @@ Redaction:
   changed, a number becomes the string `"***"` only when `String(n)` equals a known token made only
   of digits and at least 16 characters long (every other number is unchanged), and the result is
   serialized once, so the text is always valid JSON. This covers
-  successful read results and applied-write replies. `poster_get` redacts its text before it
-  truncates it. Tool error messages are redacted as text.
+  successful read results and applied-write replies. When the JSON text of a `poster_get` reply
+  exceeds 60 000 characters, the clipped preview is redacted as text before it is clipped (it may
+  over-redact, it never leaves a token prefix), and `bytes` is the character length of the
+  unredacted JSON text. Tool error messages are redacted as text.
 - Audit: `auditar` redacts every string value and every object key of the event with the same
   structural walk, then serializes once.
 - Key collisions: when two keys of one object redact to the same text, both are kept; the later
@@ -386,8 +389,10 @@ Write outcome and audit:
   neither a `response` nor `success: 1` is an unknown outcome too: nothing in it shows that the
   write was rejected. A write reply with an `error` other than 0 or `null` stays `rechazado`. Both
   unknown cases use a dedicated error class exported by `src/poster.ts`; its message carries the
-  HTTP status of a 5xx reply or of a reply that is not JSON and, when it can be built, the redacted
-  reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
+  HTTP status of a 5xx reply, of a reply that is not JSON, or of a reply whose body could not be
+  read after its headers arrived (the status is kept per attempt, so a later attempt that fails
+  before any reply never reports an earlier attempt's status) and, when it can be built, the
+  redacted reply summary. The audit entry uses the new mode `desconocido` with the redacted error,
   and the tool fails with a message that says the write may have been attempted and must be
   checked with a read before any retry. Every failure before the attempt starts (validation,
   permission, plan construction, token lookup, method check) stays `rechazado`; when a plan
@@ -419,6 +424,14 @@ Known limitations:
   the requested product, and treats an absent product list as empty, so a read-back that gets no
   list reports the product as not found.
 - Below 500 the HTTP status of a JSON reply is not kept; the reply is classified by its body alone.
+- The `create_transaction` read-back reads a missing transaction id in Poster's reply, and a
+  missing account in the transaction it reads back, as 0, so a reply without them can match.
+- `hide_dish` treats a spot whose visibility is missing, `null` or `"2"` as already hidden, while
+  `delete_old_dish` refuses such a spot, so an "(old)" dish with a recipe in that state can be
+  neither hidden nor deleted by a tool.
+- The dish write tools (`update_dish`, `hide_dish`, `delete_old_dish`, `update_dish_recipe`) read
+  the dish type with numeric coercion, so a type such as `"2"` or `["2"]` is read as 2.
+- The startup log line that reports the token source is not covered by the automated tests.
 
 ### Unit 4 acceptance
 

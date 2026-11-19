@@ -4,7 +4,7 @@
 // stripped in their literal, URL-encoded and JSON-escaped forms from tool results, tool errors and audit
 // lines. Poster is faked (fetch or a fake PosterApi); there is no network.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -917,5 +917,151 @@ describe("redaction: lowercase percent escapes and digit-only tokens", () => {
     expect(r.isError).toBe(false);
     expect(JSON.parse(r.texto).respuesta).toEqual({ monto: "***", id: 21 });
     expect(r.texto).not.toContain(digitos);
+  });
+});
+
+describe("write outcome: acknowledgements, error 0, HTTP status and unreadable bodies", () => {
+  /** Fake API for create_client_group: the plan read finds no group, every later read returns `leidos`. */
+  function apiGrupo(respuesta: Obj, leidos: Obj[] = []) {
+    const get = vi.fn(async (_cuenta: string, _metodo: string) => structuredClone(leidos) as unknown);
+    get.mockImplementationOnce(async () => []);
+    const post = vi.fn(async () => respuesta);
+    return { get, post, api: { get, post } as unknown as PosterApi };
+  }
+  /** Result of a write call, or the message of the error it threw. */
+  const resultado = (p: Promise<unknown>) => p.then((r) => r as Obj, (e: unknown) => ({ lanzado: String((e as Error)?.message ?? e) }));
+  /** A reply whose headers arrived with `status` but whose body cannot be read. */
+  const cuerpoIlegible = (status: number) => ({ status, text: () => Promise.reject(new TypeError("terminated")) }) as unknown as Response;
+
+  it("W50 a write reply with success 1 and no response is aplicado and its read-back runs", async () => {
+    const { W, archivo } = await cargar(CON_ENV);
+    const { get, post, api } = apiGrupo({ success: 1 });
+    const r = await resultado(W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }));
+    expect(r).toMatchObject({ modo: "aplicado", verificacion: { ok: false, detalle: "no aparece" } });
+    expect(post).toHaveBeenCalledTimes(1);
+    // One read builds the plan, the second is the read-back.
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(modos(archivo())).toEqual(["aplicado"]);
+  });
+
+  it("W51 a write reply with error 0 and a result is aplicado and verified", async () => {
+    const { W, archivo } = await cargar(CON_ENV);
+    const { api } = apiGrupo({ error: 0, response: 31 }, [{ client_groups_id: "31", client_groups_name: "Frecuentes" }]);
+    const r = await resultado(W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }));
+    expect(r).toMatchObject({ modo: "aplicado", respuesta: 31, verificacion: { ok: true } });
+    expect(modos(archivo())).toEqual(["aplicado"]);
+    expect(JSON.parse(archivo()[0]).resultado).toMatchObject({ respuesta: 31, verificacion: { ok: true } });
+  });
+
+  it("W52 a write reply with error 0 and no result fails with the unknown-outcome message and one desconocido audit entry naming the write", async () => {
+    const { W, archivo, salida } = await cargar(CON_ENV);
+    const { post, api } = apiGrupo({ error: 0 });
+    const r = await resultado(W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }));
+    expect(r).toEqual({ lanzado: expect.stringMatching(/puede haberse aplicado[\s\S]*lectura antes de reintentar/) });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(modos(archivo())).toEqual(["desconocido"]);
+    expect(modos(salida())).toEqual(["desconocido"]);
+    const entrada = JSON.parse(archivo()[0]);
+    expect(entrada.metodo).toBe("clients.createGroup");
+    expect(entrada.payload).toMatchObject({ client_groups_name: "Frecuentes", client_groups_discount: 10 });
+    expect(entrada.error).toMatch(/sin error y sin response/);
+  });
+
+  it("W53 a read-back that completes but does not match is aplicado with verificacion.ok false and its own detail, without the do-not-repeat notice", async () => {
+    const { W, archivo } = await cargar(CON_ENV);
+    const leido = { client_groups_id: "31", client_groups_name: "Otro nombre" };
+    const { api } = apiGrupo({ response: 31 }, [leido]);
+    const r = await resultado(W.crearGrupoCliente(ctx(api), { ...GRUPO, confirm: true }));
+    expect(r).toMatchObject({ modo: "aplicado", verificacion: { ok: false, detalle: leido } });
+    expect(r).not.toHaveProperty("aviso");
+    expect(modos(archivo())).toEqual(["aplicado"]);
+    expect(JSON.parse(archivo()[0]).resultado.verificacion).toEqual({ ok: false, detalle: leido });
+  });
+
+  it("W54 a write reply with HTTP status 400 and an error body stays rechazado after one attempt", async () => {
+    const { M, archivo } = await cargar(CON_ENV);
+    const { posts } = falsearFetch((_url, init) =>
+      init?.method === "POST" ? new Response(JSON.stringify({ error: 32, message: "Bad name" }), { status: 400 }) : json({ response: [] }),
+    );
+    const w = await (await conectar(M))("create_client_group", { ...GRUPO, confirm: true });
+    expect(posts()).toBe(1);
+    expect(modos(archivo())).toEqual(["rechazado"]);
+    expect(JSON.parse(archivo()[0]).error).toContain("Bad name");
+    expect(w.isError).toBe(false);
+    expect(JSON.parse(w.texto)).toMatchObject({ modo: "rechazado", metodo: "clients.createGroup" });
+  });
+
+  it("W55 a write reply with HTTP status 503 and an explicit error body is an unknown outcome after one attempt, with one desconocido entry", async () => {
+    const { M, archivo, salida } = await cargar(CON_ENV);
+    const { posts } = falsearFetch((_url, init) =>
+      init?.method === "POST" ? new Response(JSON.stringify({ error: 32, message: "Bad name" }), { status: 503 }) : json({ response: [] }),
+    );
+    const w = await (await conectar(M))("create_client_group", { ...GRUPO, confirm: true });
+    expect(posts()).toBe(1);
+    expect(modos(archivo())).toEqual(["desconocido"]);
+    expect(modos(salida())).toEqual(["desconocido"]);
+    expect(w.isError).toBe(true);
+    expect(w.texto).toMatch(/puede haberse aplicado/);
+    expect(w.texto).toContain("HTTP 503");
+  });
+
+  it("W56 a write reply whose body cannot be read after the headers arrived is an unknown outcome whose message keeps the HTTP status", async () => {
+    const { M, archivo } = await cargar(CON_ENV);
+    const { posts } = falsearFetch((_url, init) => (init?.method === "POST" ? cuerpoIlegible(502) : json({ response: [] })));
+    const w = await (await conectar(M))("create_client_group", { ...GRUPO, confirm: true });
+    expect(posts()).toBe(1);
+    expect(w.isError).toBe(true);
+    expect(w.texto).toMatch(/puede haberse aplicado/);
+    expect(w.texto).toContain("HTTP 502: terminated");
+    expect(modos(archivo())).toEqual(["desconocido"]);
+    expect(JSON.parse(archivo()[0]).error).toContain("HTTP 502: terminated");
+  });
+
+  it("W57 a read whose first attempt got a status but no readable body and whose later attempts fail before any reply does not report the earlier status", async () => {
+    const { P } = await cargar(CON_ENV);
+    let intento = 0;
+    const { f } = falsearFetch(() => {
+      intento += 1;
+      if (intento === 1) return cuerpoIlegible(503);
+      throw new TypeError("fetch failed");
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const p = P.posterHttp.get("tienda-a", "clients.getGroups").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    await vi.runAllTimersAsync();
+    const e = await p;
+    expect(f).toHaveBeenCalledTimes(5);
+    expect(e?.message).toBe("Póster sin respuesta JSON: fetch failed");
+  });
+
+  it("W58 auditar does not throw when the local audit file cannot be written, and one valid stdout line is still written", async () => {
+    const { A, salida } = await cargar(CON_ENV);
+    // The audit directory becomes a plain file, so creating it and appending to it both fail.
+    const dir = String(process.env.AUDIT_DIR);
+    rmSync(dir, { recursive: true, force: true });
+    writeFileSync(dir, "");
+    expect(() => A.auditar({ ...EVENTO, modo: "dry-run", payload: { a: 1 } })).not.toThrow();
+    const fuera = salida();
+    expect(fuera).toHaveLength(1);
+    expect(JSON.parse(fuera[0])).toMatchObject({ audit: true, herramienta: "create_client_group", modo: "dry-run", payload: { a: 1 } });
+  });
+
+  it("W59 a poster_get reply over 60 000 characters keeps exactly 60 000 characters of the redacted JSON text before the marker, and bytes is the length of the unredacted JSON text", async () => {
+    const { M, T } = await cargar(CON_ENV);
+    const inicio = JSON.stringify({ relleno: "", nota: "" }).length - 2;
+    const respuesta = { relleno: "x".repeat(59_990 - inicio), nota: TOKEN_A, cola: "y".repeat(100) };
+    const texto = JSON.stringify(respuesta);
+    // The token starts before the limit and ends after it.
+    expect(texto.indexOf(TOKEN_A)).toBeLessThan(60_000);
+    expect(texto.indexOf(TOKEN_A) + TOKEN_A.length).toBeGreaterThan(60_000);
+    falsearFetch(() => json({ response: respuesta }));
+    const r = await (await conectar(M))("poster_get", { cuenta: "tienda-a", metodo: "clients.getGroups" });
+    expect(r.isError).toBe(false);
+    const { bytes, respuesta: recortada } = JSON.parse(r.texto);
+    expect(bytes).toBe(texto.length);
+    expect(recortada).toBe(`${T.redactar(texto).slice(0, 60_000)}… (truncado)`);
+    expect(recortada).not.toContain(TOKEN_A.slice(0, 4));
   });
 });

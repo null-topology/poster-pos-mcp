@@ -115,6 +115,11 @@ describe("TOKEN_SOURCE=env: loader", () => {
     ["containing an ampersand", conCaracter("&", "4481")],
     ["containing an equals sign", conCaracter("=", "4482")],
     ["of 15 characters", "ZqMarcaCort4483"],
+    ["containing a plus sign", conCaracter("+", "4484")],
+    ["containing a slash", conCaracter("/", "4485")],
+    ["containing a hash sign", conCaracter("#", "4486")],
+    ["containing a question mark", conCaracter("?", "4487")],
+    ["containing a non-ASCII letter", conCaracter("ñ", "4488")],
   ];
 
   it.each(MALOS)("E2 a token (%s) fails startup, names its variable and quotes no value", (_caso, valor) => {
@@ -123,7 +128,7 @@ describe("TOKEN_SOURCE=env: loader", () => {
     expect(e.message).toContain("POSTER_TOKEN_TIENDA_B");
     expect(e.message).not.toContain("POSTER_TOKEN_TIENDA_A");
     const todo = todoDe(e);
-    const marcas = ["ZqMarca", "Larga", "ZqValido", "8810", ...Array.from({ length: 13 }, (_, i) => String(4471 + i))];
+    const marcas = ["ZqMarca", "Larga", "ZqValido", "8810", ...Array.from({ length: 18 }, (_, i) => String(4471 + i))];
     for (const marca of marcas) expect(todo, marca).not.toContain(marca);
   });
 

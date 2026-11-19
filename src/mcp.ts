@@ -113,7 +113,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
 
   s.registerTool("promotions", {
     title: "Promociones",
-    description: "Promociones. Por defecto solo vigentes (date_end ≥ hoy o 0000-00-00).",
+    description: "Promociones. Por defecto solo vigentes (date_end ≥ hoy, 0000-00-00, vacío o ausente).",
     inputSchema: { cuenta, solo_vigentes: z.boolean().default(true) },
     annotations: LECTURA,
   }, envolver((a) => L.promociones(api, a)));
@@ -198,7 +198,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     title: "Pagar / asignar cuenta a una compra",
     description:
       "storage.updateSupply: asigna (o reasigna) la cuenta de Finanzas que paga una compra existente — el equivalente del botón \"pagar\" de Póster para compras a crédito. " +
-      "Al aplicar, Póster postea el gasto en Finanzas ligado a la compra. Relee la compra y verifica que la cuenta quedó y que el total y los renglones no cambiaron. Dry-run por defecto.",
+      "Tras aplicar relee la compra y verifica que quedó la cuenta, que el total no cambió (tolerancia 0.5) y que el número de renglones es el mismo; no verifica el efecto en Finanzas. Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, supply_id: z.number().int().describe("Número de compra (supply_id del almacén)"), account_id: z.number().int().describe("Cuenta de Finanzas que paga (finance.getAccounts)"), ...escritura },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.asignarPagoCompra(ctx(extra), a)));
@@ -303,7 +303,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   s.registerTool("hide_dish", {
     title: "Ocultar platillo (sacar de carta)",
     description:
-      "menu.getProduct + menu.updateDish con el payload COMPLETO (receta, grupos y opciones con sus IDs): visible 0 en todos los spots y sufijo \" (old)\". " +
+      "menu.getProduct + menu.updateDish con el payload COMPLETO (receta, grupos y opciones con sus IDs): visible 0 en los spots del payload que reconstruye y el sufijo del parámetro sufijo (default \" (old)\"). " +
       "Nunca borra. Tras aplicar verifica que receta y grupos quedaron intactos. Dry-run por defecto.",
     inputSchema: { cuenta: cuentaEscritura, product_id: z.number().int(), sufijo: z.string().optional().describe('Default " (old)"'), ...escritura },
     annotations: ESCRITURA,
@@ -312,7 +312,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   s.registerTool("delete_old_dish", {
     title: "Borrar platillo (old) para liberar lugar",
     description:
-      "menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en \"(old)\" (pasaron por hide_dish). " +
+      "menu.removeDish SOLO para platillos cuyo nombre termina en \"(old)\" y que están ocultos explícitamente en todos sus spots (visible 0); no comprueba si pasaron por hide_dish. " +
       `Úsalo únicamente cuando ${ownerName} pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.`,
     inputSchema: { cuenta: cuentaEscritura, product_id: z.number().int(), ...escritura },
     annotations: ESCRITURA,
@@ -334,7 +334,9 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       "finance.createTransactions: registra un gasto (type 0), ingreso (type 1) o transferencia (type 2). " +
       "Monto en PESOS (se envía en pesos, no en centavos). El account_id es la cuenta financiera (ver finance.getAccounts con poster_get); " +
       "category_id es obligatorio en gasto e ingreso (finance.getCategories) y no aplica a transferencias, que usan account_destino_id. " +
-      "Valida cuenta y categoría; tras aplicar relee finance.getTransactions entre la fecha de la transacción y hoy y verifica monto, cuenta y categoría, avisando si el monto quedó 100× desviado. Dry-run por defecto.",
+      "Valida cuenta y categoría; tras aplicar relee finance.getTransactions entre la fecha de la transacción y hoy, busca el transaction_id de la respuesta y verifica monto (tolerancia 0.5 pesos), cuenta y categoría; " +
+      "en transferencias solo revisa la cuenta origen y no la categoría. Si la diferencia de monto supera la tolerancia y es de unas 100×, avisa de un posible error de unidad. " +
+      "Una respuesta de Póster sin transaction_id o sin cuenta se lee como 0 y puede coincidir: ese caso no se detecta. Dry-run por defecto.",
     inputSchema: {
       cuenta: cuentaEscritura,
       tipo: z.enum(["gasto", "ingreso", "transferencia"]).describe("gasto = salida, ingreso = entrada, transferencia = entre cuentas"),

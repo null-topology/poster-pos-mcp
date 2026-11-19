@@ -65,7 +65,7 @@ describe("no new variables: today's behaviour", () => {
     expect(escritura.cuenta.description).toBe("Cuenta destino (por defecto cafe-04)");
     expect(escritura.permitir_otra_cuenta.description).toBe("Requerido en true para escribir en una cuenta distinta de cafe-04. Solo con autorización explícita de Roy.");
     expect(m.herramienta("delete_old_dish").description).toBe(
-      'menu.removeDish SOLO para platillos ya ocultos cuyo nombre termina en "(old)" (pasaron por hide_dish). ' +
+      'menu.removeDish SOLO para platillos cuyo nombre termina en "(old)" y que están ocultos explícitamente en todos sus spots (visible 0); no comprueba si pasaron por hide_dish. ' +
         "Úsalo únicamente cuando Roy pida borrar para liberar lugar del plan de Póster. Dry-run por defecto.",
     );
     expect(m.herramienta("create_supply").inputSchema.properties.fecha.description).toBe("YYYY-MM-DD HH:MM:SS (hora de Carmen). Por defecto ahora.");

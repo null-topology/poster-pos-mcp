@@ -33,8 +33,11 @@ interface Respuesta {
 async function pedir(url: string, init: RequestInit, intentos: number): Promise<Respuesta> {
   let ultimo = "";
   for (let i = 0; i < intentos; i++) {
+    // Status of this attempt once its headers arrived; a failure before that has none.
+    let estado: number | undefined;
     try {
       const r = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
+      estado = r.status;
       const t = await r.text();
       // Redacted before clipping, so a token across the limit leaves no prefix.
       const extracto = () => redactar(t).slice(0, 120);
@@ -50,7 +53,9 @@ async function pedir(url: string, init: RequestInit, intentos: number): Promise<
         ultimo = `HTTP ${r.status}: ${extracto()}`;
       }
     } catch (e) {
-      ultimo = String((e as Error).message ?? e);
+      const motivo = String((e as Error).message ?? e);
+      // A body that fails to read after the headers keeps the status of this attempt in the diagnostic.
+      ultimo = estado === undefined ? motivo : `HTTP ${estado}: ${motivo}`;
     }
     await espera(800 * (i + 1));
   }

@@ -48,8 +48,8 @@ done
 ## 3. Secretos de autenticación del MCP
 
 ```bash
-openssl rand -hex 32 | gcloud secrets create poster-mcp-bearer      --data-file=- --labels=app=poster-rush --project=$PROJECT
-openssl rand -hex 32 | gcloud secrets create poster-mcp-oauth-key   --data-file=- --labels=app=poster-rush --project=$PROJECT
+openssl rand -hex 32 | tr -d '\n' | gcloud secrets create poster-mcp-bearer      --data-file=- --labels=app=poster-rush --project=$PROJECT
+openssl rand -hex 32 | tr -d '\n' | gcloud secrets create poster-mcp-oauth-key   --data-file=- --labels=app=poster-rush --project=$PROJECT
 read -s -p "Frase del dueño: " F; printf %s "$F" | gcloud secrets create poster-mcp-owner-pass --data-file=- --labels=app=poster-rush --project=$PROJECT; unset F
 # repetir el loop de IAM del paso 2 para que la SA lea estos tres
 ```
@@ -96,9 +96,9 @@ tiene fin fijo mientras se refresque al menos cada 30 días y no se rote `poster
 
 - **Auditoría**: Cloud Logging → `resource.type="cloud_run_revision" resource.labels.service_name="poster-rush" jsonPayload.audit=true`.
   (`recent_audit` solo ve la instancia viva: `/tmp` en Cloud Run es efímero.)
-- **Revocar todo acceso**: rotar las dos claves y redeploy. `openssl rand -hex 32 | gcloud secrets versions add poster-mcp-oauth-key --data-file=- --project=$PROJECT`
+- **Revocar todo acceso**: rotar las dos claves y redeploy. `openssl rand -hex 32 | tr -d '\n' | gcloud secrets versions add poster-mcp-oauth-key --data-file=- --project=$PROJECT`
   invalida todo lo emitido por OAuth (tokens de acceso y refresh, códigos, `client_id`); el bearer estático (`MCP_BEARER_TOKEN`) sigue válido hasta rotarlo
-  también: `openssl rand -hex 32 | gcloud secrets versions add poster-mcp-bearer --data-file=- --project=$PROJECT`.
+  también: `openssl rand -hex 32 | tr -d '\n' | gcloud secrets versions add poster-mcp-bearer --data-file=- --project=$PROJECT`.
   El servidor lee su configuración una sola vez al arrancar: las claves rotadas rigen en las instancias que arrancan después del redeploy.
 - **Rotar un token Póster**: actualizar `poster_accounts` y correr el script del paso 2 con `--confirm` (agrega versión; caché 10 min).
 - **Habilitar escritura por defecto en otra cuenta**: solo con decisión de Roy → `--update-env-vars WRITE_DEFAULT_ACCOUNTS=cafe-04,<cuenta>`.

@@ -1,6 +1,9 @@
 // Finanzas: create_transaction (finance.createTransactions) — gasto, ingreso y transferencia.
 import { describe, it, expect, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import * as W from "../src/tools/escritura.js";
+import { crearServidorMcp } from "../src/mcp.js";
 import type { PosterApi } from "../src/poster.js";
 
 type Obj = Record<string, any>;
@@ -163,5 +166,47 @@ describe("create_transaction · aplicar y verificar", () => {
     expect(r.modo).toBe("aplicado");
     expect(r.verificacion.ok).toBe(false);
     expect(r.verificacion.detalle.alerta).toMatch(/No se encontró/);
+  });
+
+  it("relee entre la fecha de la transacción y hoy cuando son días distintos", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-19T18:00:00Z")); // 12:00 del 19 en America/Merida
+      const { api } = apiFinanzas(100);
+      const get = vi.fn(api.get);
+      const r: any = await W.crearTransaccion(ctx({ ...api, get: get as never }), gastoFares({ fecha: "2026-11-02 10:00:00", confirm: true }));
+      expect(r.modo).toBe("aplicado");
+      expect(r.verificacion.ok).toBe(true);
+      const relecturas = get.mock.calls.filter(([, m]) => m === "finance.getTransactions");
+      expect(relecturas).toHaveLength(1);
+      expect(relecturas[0][2]).toEqual({ dateFrom: "20261102", dateTo: "20261119" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("create_transaction · texto MCP y unidad del monto", () => {
+  const PESOS = "Monto en PESOS (se envía en pesos, no en centavos)";
+  it("la descripción y el parámetro monto dicen pesos, y el payload lleva el monto en pesos", async () => {
+    const { api, post } = apiFinanzas();
+    const [ladoCliente, ladoServidor] = InMemoryTransport.createLinkedPair();
+    await crearServidorMcp(api).connect(ladoServidor);
+    const cliente = new Client({ name: "prueba", version: "0.0.0" });
+    await cliente.connect(ladoCliente);
+    const t = (await cliente.listTools()).tools.find((x) => x.name === "create_transaction");
+    expect(t?.description).toContain(PESOS);
+    expect(t?.description).not.toMatch(/se envía en centavos/);
+    const monto = (t?.inputSchema.properties as Obj | undefined)?.monto;
+    expect(monto?.description).toContain(PESOS);
+    const r = await cliente.callTool({
+      name: "create_transaction",
+      arguments: { cuenta: "cafe-04", tipo: "gasto", monto: 1806, account_id: 4, category_id: 6 },
+    });
+    expect(r.isError).not.toBe(true);
+    const d = JSON.parse((r.content as Array<{ text: string }>)[0].text);
+    expect(d.modo).toBe("dry-run");
+    expect(d.payload.amount_from).toBe(1806);
+    expect(post).not.toHaveBeenCalled();
   });
 });

@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PROJECT="${GCP_PROJECT_ID:?set GCP_PROJECT_ID}"
 REGION=us-central1
-echo "▶ Tests"; npx tsc -p tsconfig.json --noEmit && npx vitest run test/unit.test.ts test/altas.test.ts test/transacciones.test.ts test/compras-pago.test.ts test/http.test.ts
+echo "▶ Tests"; npx tsc -p tsconfig.json --noEmit && npx vitest run
 echo "▶ Deploy"; gcloud run deploy poster-rush --source . --region $REGION --project $PROJECT --quiet
 URL=$(gcloud run services describe poster-rush --region $REGION --project $PROJECT --format='value(status.url)')
 echo "▶ Health"; curl -s "$URL/health"; echo
