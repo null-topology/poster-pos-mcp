@@ -5,10 +5,10 @@
 //   · Every outcome (dry-run, aplicado, rechazado, desconocido) is audited without tokens. A write
 //     whose read-back fails stays aplicado, with verificacion.ok false.
 import type { PosterApi, PosterRespuesta } from "../poster.js";
-import { errorPoster, EscrituraIncierta, resumenPoster } from "../poster.js";
+import { errorPoster, EscrituraIncierta, formFields, resumenPoster } from "../poster.js";
 import { config, verificarEscritura } from "../config.js";
 import { auditar } from "../audit.js";
-import { redactar } from "../tokens.js";
+import { redactar, redactarEstructura } from "../tokens.js";
 import { centavos, diff, fechaPoster, hoyMx, norm, num, pesos, unidadReceta, type Cambio } from "../util.js";
 import { filasDe, numeroONulo } from "./lectura.js";
 
@@ -35,6 +35,13 @@ interface Plan {
   avisos?: string[];
   /** Extra result keys, shown in the dry-run and in the applied result alike. */
   report?: Obj;
+  /** Extra result keys shown in the dry-run only. */
+  dryRun?: Obj;
+  /**
+   * Every outcome after the POST carries the HTTP status and the redacted reply: `http_status` and `reply` when
+   * applied or rejected, and the same in the message of an unknown outcome.
+   */
+  reportStatus?: boolean;
   /** Lee de vuelta tras aplicar; devuelve lista de discrepancias (vacía = OK). */
   verificar?: (r: PosterRespuesta) => Promise<{ ok: boolean; detalle: unknown }>;
 }
@@ -42,9 +49,25 @@ interface Plan {
 const AVISO_SIN_RELECTURA =
   "La escritura se aplicó en Póster, pero no se pudo releer para verificarla. No la repitas: revisa el resultado con una lectura.";
 
+/** The HTTP status (none when no headers arrived) and the redacted reply of a write whose outcome is unknown. */
+function statusNote(status: number | undefined, reply: PosterRespuesta | undefined) {
+  let texto = ` HTTP status: ${status ?? "none"}.`;
+  if (reply !== undefined) {
+    try {
+      texto += ` Reply: ${redactar(JSON.stringify(reply) ?? String(reply))}`;
+    } catch {
+      // The reply cannot be formatted; the message goes without it.
+    }
+  }
+  return texto;
+}
+
 async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promise<Plan>) {
   const base = { actor: ctx.actor, cliente: ctx.cliente, cuenta: a.cuenta };
   let plan: Plan | undefined;
+  // HTTP status and reply of the POST, kept for a plan that reports them.
+  let status: number | undefined;
+  let reply: PosterRespuesta | undefined;
   try {
     verificarEscritura(a.cuenta, a.permitir_otra_cuenta);
     plan = await construir();
@@ -59,15 +82,19 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
         cambios,
         avisos: plan.avisos ?? [],
         ...plan.report,
+        ...plan.dryRun,
         payload: plan.payload,
         siguiente_paso: "Revisa el diff. Para aplicar, repite la llamada con confirm: true.",
       };
     }
-    const r = await ctx.api.post(a.cuenta, plan.metodo, plan.payload, { form: plan.form });
+    const opciones = plan.reportStatus ? { form: plan.form, onStatus: (s: number) => void (status = s) } : { form: plan.form };
+    const r = await ctx.api.post(a.cuenta, plan.metodo, plan.payload, opciones);
+    reply = r;
+    const sent = plan.reportStatus ? { http_status: status ?? null, reply: redactarEstructura(r) } : {};
     const err = errorPoster(r);
     if (err) {
       auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err });
-      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err, payload: plan.payload };
+      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err, payload: plan.payload, ...sent };
     }
     if (r.response === undefined && r.success !== 1) {
       // No error and no result: nothing shows the write was rejected, so its outcome is unknown.
@@ -102,7 +129,7 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
       aviso = AVISO_SIN_RELECTURA;
     }
     auditar({ ...base, herramienta, metodo: plan.metodo, modo: "aplicado", payload: plan.payload, resultado: { respuesta: r.response, verificacion } });
-    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, ...plan.report, verificacion, ...(aviso ? { aviso } : {}) };
+    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, ...plan.report, verificacion, ...(aviso ? { aviso } : {}), ...sent };
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     const herramienta = plan?.herramienta ?? "?";
@@ -111,7 +138,8 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
       auditar({ ...base, herramienta, metodo: plan.metodo, modo: "desconocido", payload: plan.payload, error: msg });
       throw new Error(
         `La escritura ${plan.metodo} en ${a.cuenta} puede haberse aplicado en Póster (${msg}). ` +
-          "Verifica con una lectura antes de reintentar; no la repitas a ciegas.",
+          "Verifica con una lectura antes de reintentar; no la repitas a ciegas." +
+          (plan.reportStatus ? statusNote(status, reply) : ""),
       );
     }
     // Failed before the attempt: with a plan, the entry shows the method and payload that were not sent.
@@ -1769,4 +1797,204 @@ export async function asignarPagoCompra(ctx: Contexto, a: BaseEscritura & { supp
       },
     };
   });
+}
+
+// ── Experimental write probe ────────────────────────────────────────────────
+// One fixed, tiny write per confirmed call, registered only with EXPERIMENTAL_WRITE_PROBE=1. The caller picks the
+// ids, the probe and a body variant; the server builds the body from fixed values and reports the HTTP status, the
+// reply and what it reads back. Which variant Poster accepts is what the probe is for: nothing here assumes it.
+
+const SUPPLY_VARIANTS = ["documented", "documented_flat", "form_ingredient", "legacy_unscaled"] as const;
+const TRANSACTION_VARIANTS = ["amount_currency", "amount_kopecks"] as const;
+export const PROBE_VARIANTS = [...SUPPLY_VARIANTS, ...TRANSACTION_VARIANTS] as const;
+type SupplyVariant = (typeof SUPPLY_VARIANTS)[number];
+type TransactionVariant = (typeof TRANSACTION_VARIANTS)[number];
+/** Comment of every probe supply, so it can be found and deleted. */
+const PROBE_COMMENT = "write probe";
+/** Marker a transaction's comment must contain (case-insensitive) before the probe edits it. */
+const PROBE_MARKER = "probe";
+/** Largest absolute amount, as read (kopecks), of a transaction the probe edits. */
+const PROBE_MAX_AMOUNT = 100;
+/** The new amount each transaction variant sends: 2.00 as currency units or as kopecks. */
+const PROBE_AMOUNT: Record<TransactionVariant, number> = { amount_currency: 2, amount_kopecks: 200 };
+const SUPPLY_FIELDS = ["storage_id", "supplier_id", "ingredient_id", "fecha"] as const;
+const TRANSACTION_FIELDS = ["transaction_id", "dia"] as const;
+const PROBE_NOTICES = ["Nothing was sent: this is a dry-run.", "Send one variant per approval."];
+const SUPPLY_NOTICES = [
+  "After a reply with no id, check storage.getSupplies before trying the next variant.",
+  "Delete the probe supply in the web UI after reading it back.",
+];
+
+export type ProbeArgs = BaseEscritura & {
+  probe: "supply" | "transaction_edit";
+  variant: (typeof PROBE_VARIANTS)[number];
+  storage_id?: number;
+  supplier_id?: number;
+  ingredient_id?: number;
+  fecha?: string;
+  transaction_id?: number;
+  dia?: string;
+};
+
+/** A row that is an object and not marked deleted. */
+const activeRow = (x: unknown): x is Obj => typeof x === "object" && x !== null && String((x as Obj).delete ?? "0") !== "1";
+
+/** Fields of the other probe that were passed; the probe refuses them. */
+function foreignFields(a: ProbeArgs, fields: readonly string[]) {
+  return fields.filter((k) => (a as Obj)[k] !== undefined);
+}
+
+export async function probarEscritura(ctx: Contexto, a: ProbeArgs) {
+  return ejecutar(ctx, a, async () => {
+    if (a.probe === "supply") return supplyProbe(ctx, a);
+    if (a.probe === "transaction_edit") return transactionProbe(ctx, a);
+    throw new Error('probe must be "supply" or "transaction_edit".');
+  });
+}
+
+async function supplyProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
+  if (!(SUPPLY_VARIANTS as readonly string[]).includes(a.variant)) {
+    throw new Error(`The supply probe takes the variant ${SUPPLY_VARIANTS.join(", ")}.`);
+  }
+  const variant = a.variant as SupplyVariant;
+  const foreign = foreignFields(a, TRANSACTION_FIELDS);
+  if (foreign.length) throw new Error(`The supply probe does not take ${foreign.join(", ")}.`);
+  const storage = idPositivo(a.storage_id);
+  const supplier = idPositivo(a.supplier_id);
+  const ingredient = idPositivo(a.ingredient_id);
+  if (storage === null || supplier === null || ingredient === null) {
+    throw new Error("The supply probe needs storage_id, supplier_id and ingredient_id as positive integers.");
+  }
+  const fecha = a.fecha;
+  if (typeof fecha !== "string" || !fechaHoraReal(fecha)) {
+    throw new Error("The supply probe needs fecha as a real date and time, YYYY-MM-DD HH:MM:SS.");
+  }
+  const [storages, suppliers, ingredients] = await Promise.all([
+    ctx.api.get<Obj[]>(a.cuenta, "storage.getStorages"),
+    ctx.api.get<Obj[]>(a.cuenta, "storage.getSuppliers"),
+    ctx.api.get<Obj[]>(a.cuenta, "menu.getIngredients"),
+  ]);
+  const exists = (rows: unknown, key: string, id: number) => Array.isArray(rows) && rows.some((x) => activeRow(x) && idPositivo(x[key]) === id);
+  if (!exists(storages, "storage_id", storage)) throw new Error(`Storage ${storage} does not exist on ${a.cuenta}.`);
+  if (!exists(suppliers, "supplier_id", supplier)) throw new Error(`Supplier ${supplier} does not exist on ${a.cuenta}.`);
+  if (!exists(ingredients, "ingredient_id", ingredient)) throw new Error(`Ingredient ${ingredient} does not exist on ${a.cuenta}.`);
+  // Fixed line: quantity 1 at a unit price of 1 in whatever unit the variant's body is read in. No account_id is
+  // ever sent: a supply with one is paid at once and posts an expense.
+  const line = { id: ingredient, type: TIPO_RENGLON.insumo, num: 1, sum: 1 };
+  const flat = { date: fecha, supplier_id: supplier, storage_id: storage, supply_comment: PROBE_COMMENT };
+  let payload: Obj;
+  let form = false;
+  switch (variant) {
+    case "documented":
+      payload = { supply: flat, ingredient: [line] };
+      break;
+    case "documented_flat":
+      payload = { ...flat, ingredient: [line] };
+      break;
+    case "form_ingredient":
+      payload = { ...flat, ingredient: [line] };
+      form = true;
+      break;
+    case "legacy_unscaled":
+      // The body create_supply sends, field for field, with the unit price not scaled.
+      payload = { date: fecha, storage_id: storage, supplier_id: supplier, supply_comment: PROBE_COMMENT, ingredients: [line] };
+      form = true;
+      break;
+  }
+  return {
+    herramienta: "experimental_write_probe",
+    metodo: "storage.createSupply",
+    payload,
+    form,
+    antes: null,
+    despues: { probe: "supply", variant, storage_id: storage, supplier_id: supplier, ingredient_id: ingredient, date: fecha },
+    report: { probe: "supply", variant, encoding: form ? "multipart" : "json", wire_body: form ? formFields(payload) : JSON.stringify(payload) },
+    dryRun: {
+      read_back: "storage.getSupply for the id in the reply, only when the reply carries a positive id.",
+      notices: [...PROBE_NOTICES, ...SUPPLY_NOTICES],
+    },
+    reportStatus: true,
+    verificar: async (r) => {
+      const id = idPositivo(r.response);
+      if (id === null) {
+        return { ok: false, detalle: { read: "none", reason: "The reply carries no positive supply id, so nothing was read back. Check storage.getSupplies before the next variant." } };
+      }
+      const read: unknown = await ctx.api.get<Obj>(a.cuenta, "storage.getSupply", { supply_id: id });
+      const s: Obj = typeof read === "object" && read !== null && !Array.isArray(read) ? read : {};
+      const lines = Array.isArray(s.ingredients)
+        ? s.ingredients.map((l: Obj) => ({ ingredient_id: l?.ingredient_id, supply_ingredient_num: l?.supply_ingredient_num, supply_ingredient_sum: l?.supply_ingredient_sum }))
+        : s.ingredients;
+      // As read, values untouched: what the units are is for the reader to judge.
+      const detalle = redactarEstructura({ supply_id: s.supply_id, date: s.date, supply_sum: s.supply_sum, ingredients: lines });
+      return { ok: idPositivo(s.supply_id) === id, detalle };
+    },
+  };
+}
+
+async function transactionProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
+  if (!(TRANSACTION_VARIANTS as readonly string[]).includes(a.variant)) {
+    throw new Error(`The transaction_edit probe takes the variant ${TRANSACTION_VARIANTS.join(", ")}.`);
+  }
+  const variant = a.variant as TransactionVariant;
+  const foreign = foreignFields(a, SUPPLY_FIELDS);
+  if (foreign.length) throw new Error(`The transaction_edit probe does not take ${foreign.join(", ")}.`);
+  const id = idPositivo(a.transaction_id);
+  if (id === null) throw new Error("The transaction_edit probe needs transaction_id as a positive integer.");
+  const dia = a.dia;
+  if (typeof dia !== "string" || !fechaHoraReal(`${dia} 00:00:00`)) {
+    throw new Error("The transaction_edit probe needs dia as a real date, YYYY-MM-DD.");
+  }
+  const ymd = fechaPoster(dia);
+  const params = { dateFrom: ymd, dateTo: ymd };
+  const findRow = (rows: unknown) => (Array.isArray(rows) ? rows.find((t) => activeRow(t) && idPositivo(t.transaction_id) === id) : undefined) as Obj | undefined;
+  const rows: unknown = await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", params);
+  if (!Array.isArray(rows)) throw new Error("finance.getTransactions did not return a list of transactions.");
+  const row = findRow(rows);
+  if (!row) throw new Error(`Transaction ${id} was not found on ${dia}.`);
+  const type = numeroLeido(row.type);
+  if (type === 2 || numeroLeido(row.recipient_type) === 1 || numeroLeido(row.binding_type) === 1) {
+    throw new Error(`Transaction ${id} is a transfer; the probe edits only an expense or an income.`);
+  }
+  if (type !== 0 && type !== 1) throw new Error(`Transaction ${id} has a type other than 0 (expense) or 1 (income).`);
+  const amount = numeroLeido(row.amount);
+  if (typeof amount !== "number" || Math.abs(amount) > PROBE_MAX_AMOUNT) {
+    throw new Error(`Transaction ${id} has an amount that is unreadable or above ${PROBE_MAX_AMOUNT} kopecks.`);
+  }
+  if (!String(row.comment ?? "").toLowerCase().includes(PROBE_MARKER)) {
+    throw new Error(`Transaction ${id} has no "${PROBE_MARKER}" in its comment.`);
+  }
+  const account = idPositivo(row.account_id);
+  const category = idPositivo(row.category_id);
+  const user = idPositivo(row.user_id);
+  if (account === null || category === null || user === null) {
+    throw new Error(`Transaction ${id} does not read back with a positive account_id, category_id and user_id.`);
+  }
+  const day = /^(\d{4})-(\d{2})-(\d{2}) /.exec(String(row.date ?? ""));
+  if (!day || `${day[1]}-${day[2]}-${day[3]}` !== dia) throw new Error(`Transaction ${id} does not read back with a date on ${dia}.`);
+  const date = `${day[1]}${day[2]}${day[3]}`;
+  const sent = PROBE_AMOUNT[variant];
+  // Only the amount changes; the rest is the row as read, in the order of the docs example.
+  const payload: Obj =
+    type === 0
+      ? { transaction_id: id, type, category, user_id: user, amount_from: sent, account_from: account, date }
+      : { transaction_id: id, type, category, user_id: user, amount_to: sent, account_to: account, date };
+  return {
+    herramienta: "experimental_write_probe",
+    metodo: "finance.updateTransactions",
+    payload,
+    antes: null,
+    despues: { probe: "transaction_edit", variant, transaction_id: id, amount_sent: sent },
+    report: { probe: "transaction_edit", variant, encoding: "json", wire_body: JSON.stringify(payload) },
+    dryRun: {
+      read_back: `finance.getTransactions for ${ymd}, the row with transaction_id ${id}, as read.`,
+      notices: PROBE_NOTICES,
+    },
+    reportStatus: true,
+    verificar: async () => {
+      const again: unknown = await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", params);
+      if (!Array.isArray(again)) throw new Error("finance.getTransactions did not return a list of transactions.");
+      const t = findRow(again);
+      return t ? { ok: true, detalle: redactarEstructura(t) } : { ok: false, detalle: { transaction_id: id, read: `finance.getTransactions for ${ymd}`, found: false } };
+    },
+  };
 }

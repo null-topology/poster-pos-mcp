@@ -124,6 +124,21 @@ To let an MCP client launch the server itself over stdio, set `MCP_TRANSPORT=std
 
 The first launch builds the package before the server answers, which takes about 10-15 seconds; later launches start from the npx cache.
 
+## Experimental write probe
+
+An experimental tool, off by default, for trying on a real account which request shape Poster accepts for a new supply and whether `finance.updateTransactions` edits a transaction. Neither is known yet; see the Limitations of `specs/2026-11-20-write-probes.md`.
+
+- **Switch:** `EXPERIMENTAL_WRITE_PROBE=1` (exactly `1`) adds the tool `experimental_write_probe`: 36 tools instead of 35. Unset or blank keeps it off and the tool list unchanged; any other value stops startup with an error that names the variable, never the value.
+- **How it runs:** like every write tool, through the write account guard (`permitir_otra_cuenta` for an account outside the write set), dry-run by default, the audit log and redaction. The caller picks a probe and a variant and gives ids; the server builds the body, and the quantity, price and comment are fixed. The dry-run shows the method, the encoding (`json` or `multipart`), the exact wire body and what the read-back reads, and sends nothing. One confirmed call sends one POST. Every outcome after the POST (applied, rejected or unknown) carries the HTTP status and the redacted reply. Try one variant per approval.
+- **`supply`** (`storage.createSupply`): `storage_id`, `supplier_id` and `ingredient_id`, which must exist, and `fecha` (`YYYY-MM-DD HH:MM:SS`). One fixed line: that ingredient, quantity 1, price 1, comment `write probe`, and never a finance account, so the probe supply is never paid. Variants:
+  - `documented`: JSON, `{"supply": {date, supplier_id, storage_id, supply_comment}, "ingredient": [line]}`.
+  - `documented_flat`: JSON, the same fields at the top level with `ingredient`.
+  - `form_ingredient`: multipart, the same flat fields with `ingredient` as a JSON string.
+  - `legacy_unscaled`: multipart exactly as `create_supply` sends it (`ingredients` as a JSON string), with the price 1 not scaled.
+
+  When the reply holds a supply id, the read-back reads `storage.getSupply` for it and returns the date, the total and each line's quantity and sum as read, with no verdict on units. After a reply with no id, check `storage.getSupplies` before trying the next variant. **Delete the probe supply by hand in the Poster web UI** once it has been read back.
+- **`transaction_edit`** (`finance.updateTransactions`): `transaction_id` and `dia` (`YYYY-MM-DD`). It reads that day's transactions and refuses unless the row exists, is an expense or an income (never a transfer), has an amount of at most 100 in absolute value (minor units, as read) and has `probe` in its comment. It sends the row's type, category, user, account and date with a new amount: `amount_currency` sends 2, `amount_kopecks` sends 200. The read-back returns the same day's row as read.
+
 ## Authorization limits
 
 The passphrase step of `/authorize` allows 5 wrong attempts per 15-minute window. The window starts at the first wrong passphrase, and a successful authorization resets the counter. The counter is shared by every client of a server instance, and `X-Forwarded-For` plays no part in the decision. Known limitations of this design (residual risks):

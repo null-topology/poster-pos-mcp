@@ -29,7 +29,7 @@ const ANTIGUOS = [
   "crear_platillo", "ocultar_platillo", "borrar_platillo_old", "actualizar_receta_platillo", "crear_transaccion",
 ];
 /** Every runtime configuration variable; each server starts from none of them plus the fixture. */
-const CONFIGURACION = ["POSTER_ACCOUNTS", "DEFAULT_WRITE_ACCOUNT", "WRITE_DEFAULT_ACCOUNTS", "TIMEZONE", "OWNER_NAME", "NETWORK_NAME", "SERVICE_NAME", "OAUTH_SUBJECT", "TOKEN_SOURCE", "POSTER_MYSQL_URL", "AUDIT_DIR"];
+const CONFIGURACION = ["POSTER_ACCOUNTS", "DEFAULT_WRITE_ACCOUNT", "WRITE_DEFAULT_ACCOUNTS", "TIMEZONE", "OWNER_NAME", "NETWORK_NAME", "SERVICE_NAME", "OAUTH_SUBJECT", "TOKEN_SOURCE", "POSTER_MYSQL_URL", "AUDIT_DIR", "EXPERIMENTAL_WRITE_PROBE"];
 const GRUPO = { cuenta: "tienda-b", nombre: "Frecuentes", tipo: "descuento", porcentaje: 10 };
 
 const temporales: string[] = [];

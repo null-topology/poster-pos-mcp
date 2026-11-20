@@ -13,6 +13,7 @@ const CONFIGURACION = [
   "OAUTH_SUBJECT",
   "TOKEN_SOURCE",
   "POSTER_MYSQL_URL",
+  "EXPERIMENTAL_WRITE_PROBE",
 ];
 
 if (process.env.POSTER_LIVE !== "1") for (const k of CONFIGURACION) delete process.env[k];

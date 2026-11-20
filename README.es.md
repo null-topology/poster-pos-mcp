@@ -50,6 +50,8 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 
 **Solo panel web**: permisos de puestos. La receta de un platillo existente se cambia con `update_dish_recipe` (update_dish rechaza platillos con receta).
 
+**Sonda de escritura experimental**: apagada por defecto; solo `EXPERIMENTAL_WRITE_PROBE=1` agrega la herramienta `experimental_write_probe` (una escritura mínima fija; la compra de prueba se borra a mano en el panel web). Ver [Experimental write probe](README.md#experimental-write-probe).
+
 ## Contratos de Póster (aprendidos en la migración de la 47)
 
 API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cuerpo JSON salvo `createSupply` (multipart).

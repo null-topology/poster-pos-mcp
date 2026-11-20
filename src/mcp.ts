@@ -433,5 +433,36 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.crearTransaccion(ctx(extra), a)));
 
+  // ── Experimental ──
+  if (config.experimentalWriteProbe) {
+    s.registerTool("experimental_write_probe", {
+      title: "Experimental write probe",
+      description:
+        "Experimental, off by default (registered only with EXPERIMENTAL_WRITE_PROBE=1). Sends one fixed, tiny write to find out " +
+        "which request body Poster accepts; the caller picks the ids, the probe and one body variant, never the body. " +
+        "probe supply: storage.createSupply with one ingredient line of quantity 1 at a unit price of 1 and the comment 'write probe'; " +
+        "it never pays a supply (no account_id is sent), and the probe supply is deleted by hand in the Poster web UI after it is read back. " +
+        "Variants: documented, documented_flat (JSON), form_ingredient, legacy_unscaled (multipart). " +
+        "probe transaction_edit: finance.updateTransactions on an expense or income of that day whose amount is at most 100 kopecks " +
+        "and whose comment contains 'probe'; it sends the new amount 2 (amount_currency) or 200 (amount_kopecks). " +
+        "Every outcome after the POST carries the HTTP status and the reply. Dry-run by default; one variant per approval.",
+      inputSchema: {
+        cuenta: cuentaEscritura,
+        probe: z.enum(["supply", "transaction_edit"]),
+        variant: z.enum(W.PROBE_VARIANTS).describe(
+          "supply: documented, documented_flat, form_ingredient, legacy_unscaled. transaction_edit: amount_currency, amount_kopecks.",
+        ),
+        storage_id: z.number().int().positive().optional().describe("supply: storage (storage.getStorages)"),
+        supplier_id: z.number().int().positive().optional().describe("supply: supplier (storage.getSuppliers)"),
+        ingredient_id: z.number().int().positive().optional().describe("supply: ingredient (menu.getIngredients)"),
+        fecha: z.string().optional().describe("supply: date of the supply, YYYY-MM-DD HH:MM:SS"),
+        transaction_id: z.number().int().positive().optional().describe("transaction_edit: the transaction to edit"),
+        dia: z.string().optional().describe("transaction_edit: the day of the transaction, YYYY-MM-DD"),
+        ...escritura,
+      },
+      annotations: ESCRITURA,
+    }, envolver((a, extra) => W.probarEscritura(ctx(extra), a)));
+  }
+
   return s;
 }

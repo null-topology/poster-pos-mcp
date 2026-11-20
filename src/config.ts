@@ -139,6 +139,14 @@ function parseTransport(e: Entorno): Transporte {
   throw new Error('MCP_TRANSPORT: valor no válido; usa exactamente "http" o "stdio" (sin espacios).');
 }
 
+/** Unset or blank means off; exactly "1" means on. Any other value stops startup; the error does not repeat it. */
+function parseWriteProbe(e: Entorno): boolean {
+  const v = e.EXPERIMENTAL_WRITE_PROBE;
+  if (v === undefined || isBlank(v)) return false;
+  if (v === "1") return true;
+  throw new Error('EXPERIMENTAL_WRITE_PROBE: invalid value; set it to exactly "1" to turn the experimental write probe on, or leave it unset.');
+}
+
 /** Variable holding an account's Poster token with TOKEN_SOURCE=env: cafe-04 → POSTER_TOKEN_CAFE_04. */
 export const variableToken = (cuenta: string) => `POSTER_TOKEN_${cuenta.toUpperCase().replace(/-/g, "_")}`;
 
@@ -209,6 +217,8 @@ export function cargarConfig(e: Entorno) {
     raiz: RAIZ,
     /** MCP transport (MCP_TRANSPORT): http serves /mcp on PORT; stdio speaks MCP on stdin/stdout and needs no auth. */
     transport: parseTransport(e),
+    /** Registers the experimental_write_probe tool (EXPERIMENTAL_WRITE_PROBE=1); off by default. */
+    experimentalWriteProbe: parseWriteProbe(e),
     port: Number(env("PORT", "3210")),
     publicBaseUrl: env("PUBLIC_BASE_URL", `http://localhost:${env("PORT", "3210")}`).replace(/\/$/, ""),
     tokenSource,

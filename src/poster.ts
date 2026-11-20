@@ -5,7 +5,13 @@ export type PosterRespuesta<T = unknown> = { response?: T; success?: number; err
 
 export interface PosterApi {
   get<T = unknown>(cuenta: string, metodo: string, params?: Record<string, string | number>): Promise<T>;
-  post<T = unknown>(cuenta: string, metodo: string, cuerpo: unknown, opciones?: { form?: boolean }): Promise<PosterRespuesta<T>>;
+  /** `onStatus` gets the HTTP status of the reply as soon as its headers arrive; a request that fails before that has none. */
+  post<T = unknown>(cuenta: string, metodo: string, cuerpo: unknown, opciones?: { form?: boolean; onStatus?: (status: number) => void }): Promise<PosterRespuesta<T>>;
+}
+
+/** The multipart fields of a form body, in order: a string value as it is, any other value as JSON text. */
+export function formFields(cuerpo: Record<string, unknown>): Array<[string, string]> {
+  return Object.entries(cuerpo).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
 }
 
 /**
@@ -30,7 +36,7 @@ interface Respuesta {
   cuerpo: PosterRespuesta;
 }
 
-async function pedir(url: string, init: RequestInit, intentos: number): Promise<Respuesta> {
+async function pedir(url: string, init: RequestInit, intentos: number, alEstado?: (estado: number) => void): Promise<Respuesta> {
   let ultimo = "";
   for (let i = 0; i < intentos; i++) {
     // Status of this attempt once its headers arrived; a failure before that has none.
@@ -38,6 +44,7 @@ async function pedir(url: string, init: RequestInit, intentos: number): Promise<
     try {
       const r = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
       estado = r.status;
+      alEstado?.(r.status);
       const t = await r.text();
       // Redacted before clipping, so a token across the limit leaves no prefix.
       const extracto = () => redactar(t).slice(0, 120);
@@ -89,7 +96,7 @@ export const posterHttp: PosterApi = {
     let init: RequestInit;
     if (opciones.form) {
       const f = new FormData();
-      for (const [k, v] of Object.entries(cuerpo as Record<string, unknown>)) f.append(k, typeof v === "string" ? v : JSON.stringify(v));
+      for (const [k, v] of formFields(cuerpo as Record<string, unknown>)) f.append(k, v);
       init = { method: "POST", body: f };
     } else {
       init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) };
@@ -98,7 +105,7 @@ export const posterHttp: PosterApi = {
     // pedir has called fetch by the time it fails, so the outcome of the write is unknown.
     let r: Respuesta;
     try {
-      r = await pedir(url, init, 1);
+      r = await pedir(url, init, 1, opciones.onStatus);
     } catch (e) {
       throw new EscrituraIncierta(String((e as Error)?.message ?? e));
     }
