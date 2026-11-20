@@ -255,3 +255,46 @@ describe("Y8 update_dish_recipe with grupos replaces the set and keeps the ids o
     expect(r.verificacion.ok).toBe(true);
   });
 });
+
+describe("Y9 option type matching: a read option of type 1 or 10 counts as an ingredient option", () => {
+  const SAUCES = (opciones: any[]) => [{ nombre: "Sample sauces", min: 0, max: 2, opciones }];
+  const CHEESE = { ingredient_id: 531, nombre: "Extra cheese", brutto: 20, precio: 15 };
+  // The write account the test configuration sets.
+  const cuenta = process.env.WRITE_DEFAULT_ACCOUNTS as string;
+
+  it("Y9 an ingredient option read back with type 1 keeps its dish_modification_id, in the dry-run and once applied", async () => {
+    const { api, db } = fakeApi();
+    db["menu.getProducts"][0].group_modifications[0].modifications[0].type = 1;
+    const dry: any = await W.actualizarRecetaPlatillo(ctx(api), { cuenta, product_id: 8101, receta: RECIPE, grupos: SAUCES([CHEESE]) });
+    expect(groupsOf(dry)[0].modifications[0]).toMatchObject({ dish_modification_id: 6101, ingredientId: 531, type: 10 });
+    expect(dry.modifier_groups.kept_options).toEqual([{ group: "Sample sauces", name: "Extra cheese", id: 6101 }]);
+    expect(dry.modifier_groups.created_options).toEqual([]);
+    const r: any = await W.actualizarRecetaPlatillo(ctx(api), { cuenta, product_id: 8101, receta: RECIPE, grupos: SAUCES([CHEESE]), confirm: true });
+    expect(r.modo).toBe("aplicado");
+    expect(idsOf(db["menu.getProducts"][0])).toEqual([[4101, [6101]]]);
+  });
+
+  it("Y9 a read option of type 3 does not match an ingredient option: of two read options for the same item, the type 1 one is kept", async () => {
+    const { api, db } = fakeApi();
+    db["menu.getProducts"][0].group_modifications[0].modifications = [
+      { dish_modification_id: 6111, name: "Cheese base", ingredient_id: 531, type: 3, brutto: 20, price: 15, sort_order: 0 },
+      { dish_modification_id: 6112, name: "Extra cheese", ingredient_id: 531, type: "1", brutto: 20, price: 15, sort_order: 1 },
+    ];
+    const dry: any = await W.actualizarRecetaPlatillo(ctx(api), { cuenta, product_id: 8101, receta: RECIPE, grupos: SAUCES([CHEESE]) });
+    expect(groupsOf(dry)[0].modifications[0].dish_modification_id).toBe(6112);
+    expect(dry.modifier_groups.kept_options).toEqual([{ group: "Sample sauces", name: "Extra cheese", id: 6112 }]);
+    expect(dry.modifier_groups.removed_options).toContainEqual({ group: "Sample sauces", name: "Cheese base", id: 6111 });
+  });
+
+  it("Y9 type 1 counts only for an ingredient option: a prepack option does not claim a read option of type 1", async () => {
+    const { api, db } = fakeApi();
+    db["menu.getProducts"][0].group_modifications[0].modifications = [
+      { dish_modification_id: 6113, name: "Dip base", ingredient_id: 534, type: 1, brutto: 30, price: 0, sort_order: 0 },
+    ];
+    const dip = { ingredient_id: 534, tipo: "precocinado", nombre: "Dip base", brutto: 30, precio: 0 };
+    const dry: any = await W.actualizarRecetaPlatillo(ctx(api), { cuenta, product_id: 8101, receta: RECIPE, grupos: SAUCES([dip]) });
+    expect(groupsOf(dry)[0].modifications[0]).not.toHaveProperty("dish_modification_id");
+    expect(dry.modifier_groups.kept_options).toEqual([]);
+    expect(dry.modifier_groups.created_options).toEqual([{ group: "Sample sauces", name: "Dip base" }]);
+  });
+});

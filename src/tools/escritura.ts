@@ -1192,11 +1192,21 @@ function keptGroupsReport(actuales: Obj[]): GroupsReport {
 const groupKey = (s: unknown) => String(s ?? "").trim().toLowerCase();
 
 /**
+ * Whether an option type read back matches the code written. An ingredient option is written as 10 while the
+ * menu.updateDish docs give 1 for an ingredient, so a read 1 or 10 both count as an ingredient option; every other
+ * code must be equal.
+ */
+const sameOptionType = (read: unknown, written: number) => {
+  const t = num(read);
+  return t === written || (written === TIPO_OPCION.insumo && t === 1);
+};
+
+/**
  * The groups passed to update_dish_recipe, matched with the dish's current groups so that what stays keeps its id:
  * a group whose name matches (trimmed, case-folded) keeps its dish_modification_group_id, and within it an option
- * with the same ingredient id and option type keeps its dish_modification_id. Each existing id is claimed at most
- * once, in order; a group or option left unmatched is sent without an id (Poster creates it), and the current
- * groups and options not claimed are removed by Poster. Returns the groups to send and the report.
+ * with the same ingredient id and option type (see sameOptionType) keeps its dish_modification_id. Each existing id
+ * is claimed at most once, in order; a group or option left unmatched is sent without an id (Poster creates it), and
+ * the current groups and options not claimed are removed by Poster. Returns the groups to send and the report.
  */
 function groupsWithIds(grupos: GrupoAlta[], actuales: Obj[]) {
   const report = emptyGroupsReport();
@@ -1215,7 +1225,7 @@ function groupsWithIds(grupos: GrupoAlta[], actuales: Obj[]) {
     const opciones: Obj[] = actuales[j].modifications ?? [];
     const freeOption = opciones.map(() => true);
     const modifications = g.modifications.map((m) => {
-      const k = opciones.findIndex((o, n) => freeOption[n] && num(o.dish_modification_id) > 0 && num(o.ingredient_id) === m.ingredientId && num(o.type) === m.type);
+      const k = opciones.findIndex((o, n) => freeOption[n] && num(o.dish_modification_id) > 0 && num(o.ingredient_id) === m.ingredientId && sameOptionType(o.type, m.type));
       if (k < 0) {
         report.created_options.push({ group: grupo, name: trimmedName(m) });
         return m;
