@@ -984,7 +984,7 @@ export async function actualizarPrecocinado(
         "updatePrepack reemplaza la receta completa del precocinado (se envían todas las líneas).",
         ...(manualNetAtRisk.length ? [manualNetNotice(manualNetAtRisk, "netto = brutto (no netto given)", "netto")] : []),
       ],
-      report,
+      report: { ...report, ...zeroPieceWeight(payload.ingredient, ings) },
       verificar: async () => {
         const v = (await ctx.api.get<Obj[]>(a.cuenta, "menu.getPrepacks")).find((x) => num(x.product_id) === a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -1071,6 +1071,32 @@ async function catalogoRecetas(api: PosterApi, cuenta: string) {
 
 const lineaPoster = (l: LineaReceta) => ({ id: l.ingredient_id, type: l.tipo ?? 1, brutto: l.brutto, netto: l.netto ?? l.brutto, lock: l.lock ?? 1 });
 
+const ZERO_PIECE_WEIGHT_NOTICE =
+  "These ingredients are sold by the piece and have no piece weight in Poster, so their net weight in this recipe is 0 g " +
+  "and the yield and cost are wrong. Set the piece weight in Poster first.";
+
+/**
+ * Ingredient lines about to be sent (type 1) whose ingredient is sold by the piece (`ingredient_unit` p) and has no
+ * piece weight: `ingredient_weight` absent, blank, not a finite number, or not above 0. Poster computes such a line's
+ * net weight as 0 g. A warning only: one entry per ingredient, in line order, from the menu.getIngredients rows the
+ * tool already read. Returns the report keys, or nothing when no line qualifies.
+ */
+function zeroPieceWeight(lines: Array<{ id: number; type: number }>, ingredients: Obj[]) {
+  const byId = new Map(ingredients.map((i) => [num(i.ingredient_id), i]));
+  const listed = new Set<number>();
+  const zero_piece_weight: Array<{ id: number; name: string }> = [];
+  for (const l of lines) {
+    if (l.type !== 1 || listed.has(l.id)) continue;
+    const i = byId.get(l.id);
+    if (!i || String(i.ingredient_unit ?? "").trim().toLowerCase() !== "p") continue;
+    const weight = numeroLeido(i.ingredient_weight);
+    if (typeof weight === "number" && weight > 0) continue;
+    listed.add(l.id);
+    zero_piece_weight.push({ id: l.id, name: String(i.ingredient_name ?? "").trim() });
+  }
+  return zero_piece_weight.length ? { zero_piece_weight, zero_piece_weight_notice: ZERO_PIECE_WEIGHT_NOTICE } : {};
+}
+
 /** Receta actual de un platillo/precocinado en formato de escritura (desde structure_*), with its known processing methods. */
 export function recetaParaEscribir(p: Obj) {
   return (p.ingredients ?? []).map((l: Obj) => ({
@@ -1131,6 +1157,7 @@ export async function crearPrecocinado(ctx: Contexto, a: BaseEscritura & { nombr
       antes: null,
       despues: { product_name: a.nombre, receta: legible, rendimiento_estimado: Math.round(a.receta.reduce((s, l) => s + (l.netto ?? l.brutto), 0) * 100) / 100 },
       avisos: ["Póster recalcula el rendimiento sumando pesos; las cantidades van en g / ml / piezas."],
+      report: zeroPieceWeight(payload.ingredient, cat.ings),
       verificar: async (r) => {
         const v = (await ctx.api.get<Obj[]>(a.cuenta, "menu.getPrepacks")).find((x) => num(x.product_id) === num(r.response));
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -1321,6 +1348,7 @@ export async function crearPlatillo(
         grupos: grupos.map((g) => ({ nombre: g.nombre, min: g.min, max: g.max, opciones: g.opciones.map((o) => `${o.nombre} · ${o.brutto} · +$${o.precio ?? 0}`) })),
       },
       avisos,
+      report: zeroPieceWeight(receta, cat.ings),
       verificar: async (r) => {
         const id = num((r.response as Obj)?.product_id ?? r.response);
         const v = await leerProducto(ctx.api, a.cuenta, id);
@@ -1493,7 +1521,7 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
           : "updateDish replaces the recipe and the modifier groups: a passed group or option that matches a current one keeps its id, the others are created, and the current groups and options not passed are removed (see modifier_groups). Name, price, category and visibility are kept.",
         ...(manualNetAtRisk.length ? [manualNetNotice(manualNetAtRisk, "lock 1 or netto = brutto (lock or netto not given)", "lock: 0 and netto")] : []),
       ],
-      report: { ...methodsNotCarried(receta, paired), modifier_groups: groupsReport },
+      report: { ...methodsNotCarried(receta, paired), modifier_groups: groupsReport, ...zeroPieceWeight(receta, cat.ings) },
       verificar: async () => {
         const v = await leerProducto(ctx.api, a.cuenta, a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
