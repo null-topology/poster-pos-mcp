@@ -33,6 +33,8 @@ interface Plan {
   antes: unknown;
   despues: unknown;
   avisos?: string[];
+  /** Extra result keys, shown in the dry-run and in the applied result alike. */
+  report?: Obj;
   /** Lee de vuelta tras aplicar; devuelve lista de discrepancias (vacía = OK). */
   verificar?: (r: PosterRespuesta) => Promise<{ ok: boolean; detalle: unknown }>;
 }
@@ -56,6 +58,7 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
         metodo: plan.metodo,
         cambios,
         avisos: plan.avisos ?? [],
+        ...plan.report,
         payload: plan.payload,
         siguiente_paso: "Revisa el diff. Para aplicar, repite la llamada con confirm: true.",
       };
@@ -87,7 +90,7 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
       aviso = AVISO_SIN_RELECTURA;
     }
     auditar({ ...base, herramienta, metodo: plan.metodo, modo: "aplicado", payload: plan.payload, resultado: { respuesta: r.response, verificacion } });
-    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, verificacion, ...(aviso ? { aviso } : {}) };
+    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, ...plan.report, verificacion, ...(aviso ? { aviso } : {}) };
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     const herramienta = plan?.herramienta ?? "?";
@@ -703,6 +706,187 @@ export async function actualizarCategoria(ctx: Contexto, a: BaseEscritura & { ca
   });
 }
 
+// ── Processing methods of recipe lines ──────────────────────────────────────
+// A recipe line carries five processing methods; each one switches on the item's loss rate for that method, so
+// it decides the line's net weight. Write lines take them as clear/cook/fry/stew/bake (0 or 1; what Poster does with
+// an omitted one is not known, it may reset it) and read lines expose them as pr_in_*. A recipe rewrite sends back
+// the methods it read.
+const METODOS = ["clear", "cook", "fry", "stew", "bake"] as const;
+type Metodo = (typeof METODOS)[number];
+/** Known processing methods of a recipe line, under their write keys. */
+export type Metodos = Partial<Record<Metodo, 0 | 1>>;
+
+/**
+ * Known processing methods of a read recipe line: a pr_in_* value of "1" or 1 is 1, "0" or 0 is 0. Any other
+ * value, absent or empty included, is unknown and left out, so a rewrite does not send it and a read-back does not
+ * compare it.
+ */
+function metodosLeidos(l: Obj | undefined): Metodos {
+  const m: Metodos = {};
+  for (const k of METODOS) {
+    const v = l?.[`pr_in_${k}`];
+    if (v === 1 || v === "1") m[k] = 1;
+    else if (v === 0 || v === "0") m[k] = 0;
+  }
+  return m;
+}
+
+/** Element type and id of a recipe line: the key that pairs it with an existing or read line. */
+const claveLinea = (tipo: number, id: number) => `${tipo}_${id}`;
+const claveLeida = (l: Obj) => claveLinea(num(l.structure_type) || 1, num(l.ingredient_id));
+
+/** Methods of an existing or read line that are not known (absent, empty or not 0/1); none for no line. */
+const unknownMethods = (l: Obj | undefined): Metodo[] => {
+  if (!l) return [];
+  const known = metodosLeidos(l);
+  return METODOS.filter((k) => known[k] === undefined);
+};
+
+/** Pairing key of a recipe line: element type and id, plus its gross weight. */
+type Pairable = { key: string; brutto: number };
+const readPairables = (ls: Obj[]): Pairable[] => ls.map((l) => ({ key: claveLeida(l), brutto: num(l.structure_brutto) }));
+
+/**
+ * The one pairing rule for recipe lines, used to carry methods, lock and unit over from the existing lines and to
+ * compare the lines sent with the lines read back. Within one element type and id, a line first takes the first free
+ * line with the same gross weight (compared exactly, as the gross check does), in order; the lines left then pair
+ * in occurrence order. Returns, for each line, the index of its partner in `others`, or -1 when it has none.
+ */
+function pairLines(lines: Pairable[], others: Pairable[]): number[] {
+  const partner = lines.map(() => -1);
+  const free = others.map(() => true);
+  const take = (i: number, sameGross: boolean) => {
+    const j = others.findIndex((o, k) => free[k] && o.key === lines[i].key && (!sameGross || o.brutto === lines[i].brutto));
+    if (j >= 0) {
+      partner[i] = j;
+      free[j] = false;
+    }
+  };
+  lines.forEach((_, i) => take(i, true));
+  lines.forEach((_, i) => partner[i] < 0 && take(i, false));
+  return partner;
+}
+
+/** For each requested line, the existing line it pairs with under the pairing rule, or undefined for a new one. */
+function pairedExisting(requested: Array<{ ingredient_id: number; tipo?: number; brutto: number }>, existing: Obj[]): Array<Obj | undefined> {
+  const partner = pairLines(requested.map((l) => ({ key: claveLinea(l.tipo ?? 1, l.ingredient_id), brutto: num(l.brutto) })), readPairables(existing));
+  return partner.map((j) => (j >= 0 ? existing[j] : undefined));
+}
+
+const NOT_CARRIED_NOTE =
+  "The current recipe read did not show these processing methods for these lines, so they are not sent and Poster may reset them. Check the lines in Poster.";
+
+/** Lines paired with an existing line whose methods were not all read: those methods cannot be carried over. */
+function methodsNotCarried(lines: Array<{ id: number; type: number }>, paired: Array<Obj | undefined>) {
+  const list = lines.flatMap((l, i) => {
+    const methods = unknownMethods(paired[i]);
+    return methods.length ? [{ ingredient: l.id, type: l.type, methods }] : [];
+  });
+  return list.length ? { methods_not_carried: list, methods_not_carried_note: NOT_CARRIED_NOTE } : {};
+}
+
+/** Net weight read-back tolerance of a manual-net line (lock 0): 0.0005 relative or 0.001 absolute, whichever is larger. */
+const TOLERANCIA_NETO_RELATIVA = 0.0005;
+const TOLERANCIA_NETO_ABSOLUTA = 0.001;
+const EPSILON_NETO = 1e-9;
+
+/** A recipe line as sent: element type, id, gross and net weight, lock and the methods sent with it. */
+type LineaEnviada = { id: number; type: number; brutto: number; netto: number; lock: number } & Metodos;
+
+/**
+ * Compares one sent line with one read line: every method sent against the one read (a method read as unknown is
+ * listed as unverified, not as a mismatch) and, for a line sent with lock 0 (manual net), the net weight.
+ */
+function comparePair(e: LineaEnviada, l: Obj) {
+  const leidos = metodosLeidos(l);
+  const methods: Array<{ method: Metodo; sent: 0 | 1; read: 0 | 1 }> = [];
+  const unverified: Metodo[] = [];
+  for (const k of METODOS) {
+    const enviado = e[k];
+    if (enviado === undefined) continue;
+    const leido = leidos[k];
+    if (leido === undefined) unverified.push(k);
+    else if (leido !== enviado) methods.push({ method: k, sent: enviado, read: leido });
+  }
+  let net: { sent: number; read: number | null } | undefined;
+  if (e.lock === 0) {
+    const leido = numeroLeido(l.structure_netto);
+    const tolerancia = Math.max(TOLERANCIA_NETO_RELATIVA * Math.abs(e.netto), TOLERANCIA_NETO_ABSOLUTA);
+    if (typeof leido !== "number" || Math.abs(leido - e.netto) > tolerancia + EPSILON_NETO) net = { sent: e.netto, read: leido ?? null };
+  }
+  return { methods, net, unverified };
+}
+const pairMatches = (d: ReturnType<typeof comparePair>) => d.methods.length === 0 && !d.net;
+
+/**
+ * Reassigns the read partners of sent lines that share element type, id and gross weight, so the group is compared
+ * as a multiset of (methods, net): as many pairs as possible agree (augmenting paths), and the sent lines left take
+ * the remaining read lines in order. Returns the read index for each sent index given.
+ */
+function reassignEqualGross(sentIdx: number[], readIdx: number[], matches: (i: number, j: number) => boolean): number[] {
+  const n = sentIdx.length;
+  const owner = readIdx.map(() => -1);
+  const tryAssign = (s: number, seen: boolean[]): boolean => {
+    for (const r of [s, ...readIdx.keys()].filter((r, k, a) => a.indexOf(r) === k)) {
+      if (seen[r] || !matches(sentIdx[s], readIdx[r])) continue;
+      seen[r] = true;
+      if (owner[r] < 0 || tryAssign(owner[r], seen)) {
+        owner[r] = s;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let s = 0; s < n; s++) tryAssign(s, readIdx.map(() => false));
+  const assigned = sentIdx.map(() => -1);
+  owner.forEach((s, r) => s >= 0 && (assigned[s] = r));
+  const spare = [...readIdx.keys()].filter((r) => owner[r] < 0);
+  return assigned.map((r) => readIdx[r >= 0 ? r : spare.shift()!]);
+}
+
+const UNVERIFIED_NOTE =
+  "Poster's read-back did not show these sent processing methods, so they could not be confirmed. They do not fail the check by themselves; check them in Poster.";
+
+/**
+ * Compares the recipe lines sent with the lines read back, paired under the pairing rule; lines of one item with the
+ * same gross weight are compared as a multiset. Each difference is listed under method_mismatches or net_mismatches;
+ * a sent method read back as unknown is listed under methods_unverified with a note. A sent line with no read
+ * counterpart is left to the gross-weight check.
+ */
+function diferenciasLineas(enviadas: LineaEnviada[], leidas: Obj[]) {
+  const keys = enviadas.map((e) => claveLinea(e.type, e.id));
+  const partner = pairLines(enviadas.map((e, i) => ({ key: keys[i], brutto: num(e.brutto) })), readPairables(leidas));
+  const equalGross = new Map<string, number[]>();
+  partner.forEach((j, i) => {
+    if (j < 0 || num(leidas[j].structure_brutto) !== num(enviadas[i].brutto)) return;
+    const g = `${keys[i]}|${num(enviadas[i].brutto)}`;
+    equalGross.set(g, [...(equalGross.get(g) ?? []), i]);
+  });
+  for (const sentIdx of equalGross.values()) {
+    if (sentIdx.length < 2) continue;
+    const reassigned = reassignEqualGross(sentIdx, sentIdx.map((i) => partner[i]), (i, j) => pairMatches(comparePair(enviadas[i], leidas[j])));
+    sentIdx.forEach((i, k) => (partner[i] = reassigned[k]));
+  }
+  const method_mismatches: Array<{ item: string; method: Metodo; sent: 0 | 1; read: 0 | 1 }> = [];
+  const net_mismatches: Array<{ item: string; sent: number; read: number | null }> = [];
+  const methods_unverified: Array<{ ingredient: number; type: number; methods: Metodo[] }> = [];
+  enviadas.forEach((e, i) => {
+    if (partner[i] < 0) return;
+    const item = keys[i];
+    const d = comparePair(e, leidas[partner[i]]);
+    for (const m of d.methods) method_mismatches.push({ item, ...m });
+    if (d.net) net_mismatches.push({ item, ...d.net });
+    if (d.unverified.length) methods_unverified.push({ ingredient: e.id, type: e.type, methods: d.unverified });
+  });
+  return {
+    ...(method_mismatches.length ? { method_mismatches } : {}),
+    ...(net_mismatches.length ? { net_mismatches } : {}),
+    ...(methods_unverified.length ? { methods_unverified, methods_unverified_note: UNVERIFIED_NOTE } : {}),
+  };
+}
+/** The method and net checks pass: no known method and no manual net differ. Unverified methods do not fail them. */
+const linesOk = (d: ReturnType<typeof diferenciasLineas>) => !d.method_mismatches && !d.net_mismatches;
+
 // ── Precocinados (menu.updatePrepack) ───────────────────────────────────────
 export interface LineaPrepack {
   ingredient_id: number;
@@ -713,7 +897,7 @@ export interface LineaPrepack {
   lock?: number;
 }
 
-export function lineasPrepackActuales(p: Obj): Required<LineaPrepack>[] {
+export function lineasPrepackActuales(p: Obj): Array<Required<LineaPrepack> & { metodos: Metodos }> {
   return (p.ingredients ?? []).map((l: Obj) => ({
     ingredient_id: num(l.ingredient_id),
     tipo: num(l.structure_type) || 1,
@@ -721,8 +905,27 @@ export function lineasPrepackActuales(p: Obj): Required<LineaPrepack>[] {
     netto: num(l.structure_netto),
     unidad: unidadReceta(String(l.structure_unit)),
     lock: num(l.structure_lock),
+    metodos: metodosLeidos(l),
   }));
 }
+
+/**
+ * Poster recalculates a prepack's yield from the lines' net weights and ignores a separately sent one (field
+ * report, not in the docs), so a requested yield may not be kept.
+ */
+const avisoRendimiento = (pedido: number, leido: number, recetaOk: boolean) =>
+  `Poster recalculates the yield from the lines' netto: the requested yield (${pedido}) was not kept and Poster read ${leido}.` +
+  (recetaOk ? " The recipe itself was applied; do not repeat the call." : "");
+
+/**
+ * Dry-run notice for caller lines that pair with an existing manual-net line (lock 0) but are sent with a default
+ * lock or netto: the existing manual net weight may be lost. Text only; the lines are sent as they are.
+ */
+const manualNetNotice = (items: string[], defaults: string, passHint: string) =>
+  `${items.join(", ")}: these lines pair with an existing manual-net line (lock 0) and are sent with ${defaults}, ` +
+  `so the manual net weight may be lost. Pass ${passHint} to keep it.`;
+/** An existing line read with lock 0 (manual net); an absent or empty lock is not taken as manual. */
+const isManualNet = (l: Obj | undefined) => l !== undefined && l.structure_lock !== undefined && l.structure_lock !== "" && l.structure_lock !== null && num(l.structure_lock) === 0;
 
 export async function actualizarPrecocinado(
   ctx: Contexto,
@@ -738,16 +941,25 @@ export async function actualizarPrecocinado(
     const actuales = lineasPrepackActuales(p);
     const insumoIds = new Set(ings.map((i) => num(i.ingredient_id)));
     const prepackIds = new Set(pps.map((x) => num(x.product_id)));
-    const receta = (a.receta ?? actuales).map((l) => {
+    // Every line, re-sent or given by the caller, keeps the methods, unit and lock of the existing line it pairs with
+    // under the pairing rule (same item, same gross weight first, then occurrence order).
+    const requested = a.receta ?? actuales;
+    const existing: Obj[] = p.ingredients ?? [];
+    const partner = pairLines(requested.map((l) => ({ key: claveLinea(l.tipo ?? 1, l.ingredient_id), brutto: num(l.brutto) })), readPairables(existing));
+    const receta = requested.map((l, i) => {
       const tipo = l.tipo ?? 1;
       if (tipo === 1 && !insumoIds.has(l.ingredient_id)) throw new Error(`Insumo ${l.ingredient_id} no existe`);
       if (tipo === 2 && !prepackIds.has(l.ingredient_id)) throw new Error(`Precocinado ${l.ingredient_id} no existe`);
-      const previo = actuales.find((x) => x.ingredient_id === l.ingredient_id && x.tipo === tipo);
-      return { ingredient_id: l.ingredient_id, tipo, brutto: l.brutto, netto: l.netto ?? l.brutto, unidad: l.unidad ?? previo?.unidad ?? "g", lock: l.lock ?? previo?.lock ?? 0 };
+      const previo = partner[i] >= 0 ? actuales[partner[i]] : undefined;
+      return { ingredient_id: l.ingredient_id, tipo, brutto: l.brutto, netto: l.netto ?? l.brutto, unidad: l.unidad ?? previo?.unidad ?? "g", lock: l.lock ?? previo?.lock ?? 0, metodos: previo?.metodos ?? {} };
     });
     if (!receta.length) throw new Error("La receta del precocinado no puede quedar vacía");
-    // Contrato: ingredient:[{id:number, type, brutto, netto, lock, unit}], prepack_unit (no unit), out = rendimiento
-    const conv = (r: typeof receta) => r.map((l) => ({ id: l.ingredient_id, type: l.tipo, brutto: l.brutto, netto: l.netto, lock: l.lock, unit: l.unidad }));
+    const report = methodsNotCarried(receta.map((l) => ({ id: l.ingredient_id, type: l.tipo })), partner.map((j) => (j >= 0 ? existing[j] : undefined)));
+    // A caller line without netto is sent with netto = brutto, even when it pairs with an existing manual-net line.
+    const manualNetAtRisk = (a.receta ?? []).flatMap((l, i) => (isManualNet(existing[partner[i]]) && l.netto === undefined ? [claveLinea(l.tipo ?? 1, l.ingredient_id)] : []));
+    // Contract: ingredient:[{id:number, type, brutto, netto, lock, unit, clear?, cook?, fry?, stew?, bake?}],
+    // prepack_unit (not unit), out = yield. Only known methods are sent.
+    const conv = (r: typeof receta) => r.map((l) => ({ id: l.ingredient_id, type: l.tipo, brutto: l.brutto, netto: l.netto, lock: l.lock, unit: l.unidad, ...l.metodos }));
     const antes = { prepack_id: a.product_id, product_id: a.product_id, product_name: String(p.product_name).trim(), prepack_unit: p.unit || "kg", out: num(p.out), ingredient: conv(actuales) };
     const payload = { ...antes, ...(a.nombre !== undefined && { product_name: a.nombre }), ...(a.rendimiento !== undefined && { out: a.rendimiento }), ingredient: conv(receta) };
     return {
@@ -756,14 +968,32 @@ export async function actualizarPrecocinado(
       payload,
       antes,
       despues: payload,
-      avisos: ["updatePrepack reemplaza la receta completa del precocinado (se envían todas las líneas)."],
+      avisos: [
+        "updatePrepack reemplaza la receta completa del precocinado (se envían todas las líneas).",
+        ...(manualNetAtRisk.length ? [manualNetNotice(manualNetAtRisk, "netto = brutto (no netto given)", "netto")] : []),
+      ],
+      report,
       verificar: async () => {
         const v = (await ctx.api.get<Obj[]>(a.cuenta, "menu.getPrepacks")).find((x) => num(x.product_id) === a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
         const leido = lineasPrepackActuales(v).map((l) => `${l.tipo}_${l.ingredient_id}:${l.brutto}`).sort();
         const esperado = receta.map((l) => `${l.tipo}_${l.ingredient_id}:${l.brutto}`).sort();
-        const ok = JSON.stringify(leido) === JSON.stringify(esperado) && Math.abs(num(v.out) - payload.out) < 1;
-        return { ok, detalle: { receta_leida: leido, rendimiento_leido: num(v.out) } };
+        // Poster recalculates the yield from the lines' netto, so the yield is compared only when the caller asked for one.
+        const rendimientoLeido = num(v.out);
+        const pedido = a.rendimiento;
+        const rendimientoPerdido = pedido !== undefined && Math.abs(rendimientoLeido - pedido) >= 1;
+        const diferencias = diferenciasLineas(payload.ingredient, v.ingredients ?? []);
+        const recetaOk = JSON.stringify(leido) === JSON.stringify(esperado) && linesOk(diferencias);
+        const ok = recetaOk && !rendimientoPerdido;
+        return {
+          ok,
+          detalle: {
+            receta_leida: leido,
+            rendimiento_leido: rendimientoLeido,
+            ...(rendimientoPerdido ? { yield_alert: avisoRendimiento(pedido, rendimientoLeido, recetaOk) } : {}),
+            ...diferencias,
+          },
+        };
       },
     };
   });
@@ -829,7 +1059,7 @@ async function catalogoRecetas(api: PosterApi, cuenta: string) {
 
 const lineaPoster = (l: LineaReceta) => ({ id: l.ingredient_id, type: l.tipo ?? 1, brutto: l.brutto, netto: l.netto ?? l.brutto, lock: l.lock ?? 1 });
 
-/** Receta actual de un platillo/precocinado en formato de escritura (desde structure_*). */
+/** Receta actual de un platillo/precocinado en formato de escritura (desde structure_*), with its known processing methods. */
 export function recetaParaEscribir(p: Obj) {
   return (p.ingredients ?? []).map((l: Obj) => ({
     id: num(l.ingredient_id),
@@ -837,6 +1067,7 @@ export function recetaParaEscribir(p: Obj) {
     brutto: num(l.structure_brutto),
     netto: num(l.structure_netto) || num(l.structure_brutto),
     lock: l.structure_lock === undefined ? 1 : num(l.structure_lock),
+    ...metodosLeidos(l),
   }));
 }
 const firmaReceta = (r: Array<{ id: number; type: number; brutto: number }>) => r.map((l) => `${l.type}_${l.id}:${l.brutto}`).sort();
@@ -923,6 +1154,87 @@ const gruposPoster = (grupos: GrupoAlta[]) =>
     maxNum: g.max,
     modifications: g.opciones.map((o) => ({ ingredientId: o.ingredient_id, type: TIPO_OPCION[o.tipo ?? "insumo"], name: o.nombre, brutto: o.brutto, price: centavos(o.precio ?? 0) })),
   }));
+
+/**
+ * The dish's current modifier groups and options, each sent with its id. menu.updateDish removes every group and
+ * option the request does not carry by id, so this is how a rewrite keeps them unchanged.
+ */
+function currentGroupsWithIds(p: Obj, base: ReturnType<typeof payloadUpdateDish>) {
+  return (p.group_modifications ?? []).map((g: Obj, gi: number) => ({
+    dish_modification_group_id: num(g.dish_modification_group_id),
+    ...base.modificationgroup[gi],
+    modifications: base.modificationgroup[gi].modifications.map(({ _id, ...m }: Obj) => ({ dish_modification_id: _id, ...m })),
+  }));
+}
+
+type ReportedGroup = { name: string; id: number };
+type ReportedOption = { group: string; name: string; id: number };
+/** Groups and options a group rewrite keeps (with their ids), creates (no id yet) and removes (with their ids). */
+interface GroupsReport {
+  kept_groups: ReportedGroup[];
+  created_groups: Array<{ name: string }>;
+  removed_groups: ReportedGroup[];
+  kept_options: ReportedOption[];
+  created_options: Array<{ group: string; name: string }>;
+  removed_options: ReportedOption[];
+}
+const emptyGroupsReport = (): GroupsReport => ({ kept_groups: [], created_groups: [], removed_groups: [], kept_options: [], created_options: [], removed_options: [] });
+const trimmedName = (x: Obj) => String(x.name ?? "").trim();
+const reportedOptions = (g: Obj): ReportedOption[] =>
+  (g.modifications ?? []).map((o: Obj) => ({ group: trimmedName(g), name: trimmedName(o), id: num(o.dish_modification_id) }));
+
+/** Report of a rewrite that keeps every current group and option. */
+function keptGroupsReport(actuales: Obj[]): GroupsReport {
+  return { ...emptyGroupsReport(), kept_groups: actuales.map((g) => ({ name: trimmedName(g), id: num(g.dish_modification_group_id) })), kept_options: actuales.flatMap(reportedOptions) };
+}
+
+/** Group name as compared with an existing group: trimmed and case-folded. */
+const groupKey = (s: unknown) => String(s ?? "").trim().toLowerCase();
+
+/**
+ * The groups passed to update_dish_recipe, matched with the dish's current groups so that what stays keeps its id:
+ * a group whose name matches (trimmed, case-folded) keeps its dish_modification_group_id, and within it an option
+ * with the same ingredient id and option type keeps its dish_modification_id. Each existing id is claimed at most
+ * once, in order; a group or option left unmatched is sent without an id (Poster creates it), and the current
+ * groups and options not claimed are removed by Poster. Returns the groups to send and the report.
+ */
+function groupsWithIds(grupos: GrupoAlta[], actuales: Obj[]) {
+  const report = emptyGroupsReport();
+  const freeGroup = actuales.map(() => true);
+  const modificationgroup = gruposPoster(grupos).map((g) => {
+    const grupo = trimmedName(g);
+    const j = actuales.findIndex((x, k) => freeGroup[k] && num(x.dish_modification_group_id) > 0 && groupKey(x.name) === groupKey(g.name));
+    if (j < 0) {
+      report.created_groups.push({ name: grupo });
+      for (const m of g.modifications) report.created_options.push({ group: grupo, name: trimmedName(m) });
+      return g;
+    }
+    freeGroup[j] = false;
+    const dish_modification_group_id = num(actuales[j].dish_modification_group_id);
+    report.kept_groups.push({ name: grupo, id: dish_modification_group_id });
+    const opciones: Obj[] = actuales[j].modifications ?? [];
+    const freeOption = opciones.map(() => true);
+    const modifications = g.modifications.map((m) => {
+      const k = opciones.findIndex((o, n) => freeOption[n] && num(o.dish_modification_id) > 0 && num(o.ingredient_id) === m.ingredientId && num(o.type) === m.type);
+      if (k < 0) {
+        report.created_options.push({ group: grupo, name: trimmedName(m) });
+        return m;
+      }
+      freeOption[k] = false;
+      const dish_modification_id = num(opciones[k].dish_modification_id);
+      report.kept_options.push({ group: grupo, name: trimmedName(m), id: dish_modification_id });
+      return { dish_modification_id, ...m };
+    });
+    report.removed_options.push(...reportedOptions(actuales[j]).filter((_, n) => freeOption[n]));
+    return { dish_modification_group_id, ...g, modifications };
+  });
+  actuales.forEach((x, k) => {
+    if (!freeGroup[k]) return;
+    report.removed_groups.push({ name: trimmedName(x), id: num(x.dish_modification_group_id) });
+    report.removed_options.push(...reportedOptions(x));
+  });
+  return { modificationgroup, report };
+}
 
 // ── create_dish (menu.createDish) ───────────────────────────────────────────
 export async function crearPlatillo(
@@ -1019,11 +1331,7 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
     const receta = recetaParaEscribir(p);
     // Base = payload completo que ya usa update_dish; se añade receta e IDs de grupos/opciones para no perder nada
     const base = payloadUpdateDish(p);
-    const grupos = (p.group_modifications ?? []).map((g: Obj, gi: number) => ({
-      dish_modification_group_id: num(g.dish_modification_group_id),
-      ...base.modificationgroup[gi],
-      modifications: base.modificationgroup[gi].modifications.map(({ _id, ...m }: Obj) => ({ dish_modification_id: _id, ...m })),
-    }));
+    const grupos = currentGroupsWithIds(p, base);
     const { "ingredient[]": _vacio, ...resto } = base;
     const antes = { ...resto, modificationgroup: grupos, ...(receta.length ? { ingredient: receta } : { "ingredient[]": [] }) };
     const payload = structuredClone(antes) as Obj;
@@ -1036,14 +1344,22 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
       antes,
       despues: payload,
       avisos: [`Se reenvía la receta (${receta.length} líneas) y ${grupos.length} grupos tal como están; solo cambian nombre y visibilidad.`],
+      // Each re-sent line is the existing line itself, so its unread methods are the ones not carried.
+      report: methodsNotCarried(receta, p.ingredients ?? []),
       verificar: async () => {
         const v = await leerProducto(ctx.api, a.cuenta, a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
         const oculto = (v.spots ?? []).every((s: Obj) => String(s.visible) !== "1");
-        const recetaOk = JSON.stringify(firmaReceta(recetaParaEscribir(v))) === JSON.stringify(firmaReceta(receta));
+        const grossOk = JSON.stringify(firmaReceta(recetaParaEscribir(v))) === JSON.stringify(firmaReceta(receta));
         const gruposOk = JSON.stringify(firmaGrupos(v.group_modifications ?? [], true)) === JSON.stringify(firmaGrupos(p.group_modifications ?? [], true));
         const nombreOk = String(v.product_name).trim() === String(payload.product_name).trim();
-        return { ok: oculto && recetaOk && gruposOk && nombreOk, detalle: { nombre: v.product_name, oculto, receta_intacta: recetaOk, grupos_intactos: gruposOk } };
+        const diferencias = diferenciasLineas(receta, v.ingredients ?? []);
+        // The recipe is intact only when the gross, method and net checks all pass; unverified methods are listed only.
+        const recetaOk = grossOk && linesOk(diferencias);
+        return {
+          ok: oculto && recetaOk && gruposOk && nombreOk,
+          detalle: { nombre: v.product_name, oculto, receta_intacta: recetaOk, grupos_intactos: gruposOk, ...diferencias },
+        };
       },
     };
   });
@@ -1089,9 +1405,10 @@ export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { prod
 }
 
 
-// ── update_dish_recipe (menu.updateDish COMPLETO con receta y grupos nuevos) ─
-// Reemplaza receta y grupos de un platillo existente; conserva nombre, categoría, workshop, color, precio y visibilidad.
-export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; receta: LineaReceta[]; grupos: GrupoAlta[] }) {
+// ── update_dish_recipe (menu.updateDish COMPLETO con receta y grupos) ──────
+// Replaces the recipe of an existing dish and, when grupos is passed, its modifier groups; omitted grupos keeps the
+// current groups and options with their ids. Name, category, workshop, color, price and visibility are kept.
+export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; receta: LineaReceta[]; grupos?: GrupoAlta[] }) {
   return ejecutar(ctx, a, async () => {
     const [p, prods, cat] = await Promise.all([
       leerProducto(ctx.api, a.cuenta, a.product_id),
@@ -1102,25 +1419,59 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
     if (!a.receta.length) throw new Error("La receta no puede quedar vacía");
     const avisos: string[] = [];
-    validarGrupos(a.grupos, cat, prods, avisos);
-    if (a.grupos.some((g) => g.opciones.some((o) => o.tipo === "platillo" && o.ingredient_id === a.product_id))) throw new Error("Un platillo no puede ser opción de sí mismo");
-    const receta = a.receta.map(lineaPoster);
+    if (a.grupos !== undefined) {
+      validarGrupos(a.grupos, cat, prods, avisos);
+      if (a.grupos.some((g) => g.opciones.some((o) => o.tipo === "platillo" && o.ingredient_id === a.product_id))) throw new Error("Un platillo no puede ser opción de sí mismo");
+    }
+    // A caller line keeps the methods of the existing line it pairs with under the pairing rule; net and lock
+    // defaults stay as before.
+    const existing: Obj[] = p.ingredients ?? [];
+    const paired = pairedExisting(a.receta, existing);
+    const receta = a.receta.map((l, i) => ({ ...lineaPoster(l), ...metodosLeidos(paired[i]) }));
     for (const l of a.receta) cat.nombre(l.tipo ?? 1, l.ingredient_id);
+    // A caller line without lock or netto is sent with lock 1 or netto = brutto, even when it pairs with an existing
+    // manual-net line.
+    const manualNetAtRisk = a.receta.flatMap((l, i) =>
+      isManualNet(paired[i]) && (l.lock === undefined || l.netto === undefined) ? [claveLinea(l.tipo ?? 1, l.ingredient_id)] : [],
+    );
     const base = payloadUpdateDish(p);
     const { "ingredient[]": _v, modificationgroup: _g, ...resto } = base;
-    const legible = (r: Array<{ id: number; type: number; brutto: number }>) => r.map((l) => `${cat.nombre(l.type, l.id)} · ${l.brutto} ${cat.unidad(l.type, l.id)}`);
+    // Readable recipe line: it names the processing methods that are on and marks the ones that are unknown (not read,
+    // so not carried over), so the dry-run diff shows them.
+    const legible = (r: Array<{ id: number; type: number; brutto: number } & Metodos>, unknownLists: Metodo[][]) =>
+      r.map((l, i) => {
+        const encendidos = METODOS.filter((k) => l[k] === 1);
+        const sinLeer = unknownLists[i] ?? [];
+        return `${cat.nombre(l.type, l.id)} · ${l.brutto} ${cat.unidad(l.type, l.id)}` +
+          (encendidos.length ? ` · methods: ${encendidos.join(", ")}` : "") +
+          (sinLeer.length === METODOS.length ? " · methods unknown" : sinLeer.length ? ` · methods unknown: ${sinLeer.join(", ")}` : "");
+      });
     const gruposLegibles = (gs: Obj[]) => gs.map((g) => `${String(g.name).trim()} [${num(g.num_min ?? g.minNum)}-${num(g.num_max ?? g.maxNum)}]: ` + (g.modifications ?? []).map((m: Obj) => String(m.name).trim()).join(" | "));
     const actual = recetaParaEscribir(p);
-    const payload = { ...resto, ingredient: receta, modificationgroup: gruposPoster(a.grupos) };
+    // Omitted grupos keeps every current group and option by sending them with their ids, as hide_dish does;
+    // passed grupos (an empty list included) replace the set, keeping the ids of what matches.
+    const currentGroups: Obj[] = p.group_modifications ?? [];
+    const { modificationgroup, report: groupsReport } =
+      a.grupos === undefined
+        ? { modificationgroup: currentGroupsWithIds(p, base) as Obj[], report: keptGroupsReport(currentGroups) }
+        : groupsWithIds(a.grupos, currentGroups);
+    const payload = { ...resto, ingredient: receta, modificationgroup };
     const esperadoReceta = firmaReceta(receta);
-    const esperadoGrupos = firmaGrupos(payload.modificationgroup.map((g) => ({ ...g, modifications: g.modifications.map((m) => ({ ...m, price: m.price / 100 })) })));
+    const esperadoGrupos = firmaGrupos(payload.modificationgroup.map((g: Obj) => ({ ...g, modifications: g.modifications.map((m: Obj) => ({ ...m, price: m.price / 100 })) })));
     return {
       herramienta: "update_dish_recipe",
       metodo: "menu.updateDish",
       payload,
-      antes: { nombre: String(p.product_name).trim(), receta: legible(actual), grupos: gruposLegibles(p.group_modifications ?? []) },
-      despues: { nombre: String(p.product_name).trim(), receta: legible(receta), grupos: gruposLegibles(payload.modificationgroup) },
-      avisos: [...avisos, "updateDish reemplaza receta y grupos completos; nombre, precio, categoría y visibilidad se conservan."],
+      antes: { nombre: String(p.product_name).trim(), receta: legible(actual, existing.map(unknownMethods)), grupos: gruposLegibles(currentGroups) },
+      despues: { nombre: String(p.product_name).trim(), receta: legible(receta, paired.map(unknownMethods)), grupos: gruposLegibles(payload.modificationgroup) },
+      avisos: [
+        ...avisos,
+        a.grupos === undefined
+          ? "updateDish replaces the recipe. grupos was not passed, so the current modifier groups and options are sent with their ids and kept. Name, price, category and visibility are kept."
+          : "updateDish replaces the recipe and the modifier groups: a passed group or option that matches a current one keeps its id, the others are created, and the current groups and options not passed are removed (see modifier_groups). Name, price, category and visibility are kept.",
+        ...(manualNetAtRisk.length ? [manualNetNotice(manualNetAtRisk, "lock 1 or netto = brutto (lock or netto not given)", "lock: 0 and netto")] : []),
+      ],
+      report: { ...methodsNotCarried(receta, paired), modifier_groups: groupsReport },
       verificar: async () => {
         const v = await leerProducto(ctx.api, a.cuenta, a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -1132,7 +1483,18 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
           JSON.stringify(g) !== JSON.stringify(esperadoGrupos) && { grupos_esperados: esperadoGrupos, grupos_leidos: g },
           !precioOk && "precio cambió", !visOk && "visibilidad cambió",
         ].filter(Boolean);
-        return { ok: fallas.length === 0, detalle: fallas.length ? { fallas } : { receta: `${r.length} líneas`, grupos: g.length } };
+        const diferencias = diferenciasLineas(receta, v.ingredients ?? []);
+        // A kept group or option id that is not read back means Poster recreated it; reported, the check stays as is.
+        const leidos: Obj[] = v.group_modifications ?? [];
+        const readGroupIds = new Set(leidos.map((x) => num(x.dish_modification_group_id)));
+        const readOptionIds = new Set(leidos.flatMap((x) => (x.modifications ?? []).map((o: Obj) => num(o.dish_modification_id))));
+        const groups = groupsReport.kept_groups.filter((x) => !readGroupIds.has(x.id));
+        const options = groupsReport.kept_options.filter((x) => !readOptionIds.has(x.id));
+        const changedIds = groups.length || options.length ? { group_ids_changed: { ...(groups.length ? { groups } : {}), ...(options.length ? { options } : {}) } } : {};
+        return {
+          ok: fallas.length === 0 && linesOk(diferencias),
+          detalle: { ...(fallas.length ? { fallas } : { receta: `${r.length} líneas`, grupos: g.length }), ...diferencias, ...changedIds },
+        };
       },
     };
   });

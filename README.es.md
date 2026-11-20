@@ -37,7 +37,7 @@ Aplicar una escritura (`confirm: true`) y escribir fuera de las cuentas por defe
 `create_supply`, `update_dish` (updateDish), `update_category` (updateCategory),
 `update_prepack` (updatePrepack), `create_category` (createCategory), `create_prepack` (createPrepack),
 `create_dish` (createDish con receta y grupos; relee y verifica), `hide_dish` (getProduct + updateDish COMPLETO con receta, visible 0 en los spots del payload que reconstruye y el sufijo del parámetro `sufijo`, por defecto " (old)"),
-`update_dish_recipe` (getProduct + updateDish COMPLETO que reemplaza receta y grupos; reenvía los demás campos a partir de lo leído, entre ellos nombre, categoría, workshop, color, precio y visibilidad; relee y compara receta, grupos, precio y visibilidad),
+`update_dish_recipe` (getProduct + updateDish COMPLETO que reemplaza la receta; sin `grupos` conserva los grupos y opciones de modificadores actuales con sus ids, y con `grupos` reemplaza el conjunto: un grupo con el mismo nombre y, dentro de él, una opción con el mismo insumo y tipo conservan su id, los demás se crean y los actuales que no se pasan se borran, según lista el dry-run; reenvía los demás campos a partir de lo leído, entre ellos nombre, categoría, workshop, color, precio y visibilidad; relee y compara receta, grupos, precio y visibilidad),
 `delete_old_dish` (menu.removeDish solo para un platillo cuyo nombre termina en "(old)" y cuyos spots están todos marcados como ocultos; relee y verifica),
 `create_transaction` (finance.createTransactions: `type` 0 gasto / 1 ingreso / 2 transferencia es OBLIGATORIO; la categoría va como `category` (id, no `category_id`); **el monto se envía en PESOS** —finance.createTransactions NO usa centavos, mientras que `create_supply` y `create_dish` envían centavos—; valida `account_id` y `category` contra `finance.getAccounts`/`getCategories`; tras aplicar relee `finance.getTransactions`, busca el `transaction_id` de la respuesta y compara monto (tolerancia 0.5 pesos), cuenta y categoría —en transferencias solo la cuenta origen y sin categoría—, y marca una posible desviación de unidad de 100× cuando la diferencia supera la tolerancia y el monto leído es unas 100 veces mayor o menor; una respuesta de Póster sin `transaction_id` o sin cuenta se lee como 0 y puede coincidir, y eso no se detecta),
 `create_supply` ahora acepta `account_id` opcional (paga al momento; sin él la compra queda a crédito),
@@ -61,6 +61,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
 - Precio de **opción** de modificador: se **escribe en centavos** (2000) y se **lee en pesos** (20).
 - Visibilidad en terminal = `spots[].visible`. El `hidden` de `getProducts` es otro flag: no derivar `visible` de `hidden`.
 - Opciones: `{name, ingredientId, ingredient_id, type, brutto, price, sort_order}`; `type` 2 = platillo, 1/10 = insumo.
+- Según la documentación, updateDish conserva un grupo solo si lleva `dish_modification_group_id` y una opción solo si lleva `dish_modification_id`; lo que va sin id se crea y lo actual que no va por id se borra.
 - **Póster no anida**: un platillo con grupos propios no puede ser opción tipo 2 de otro (`Bad <id> value`).
 - `menu.getProduct {product_id}` sí responde (probado 23 oct 2026) con receta y grupos; las altas lo usan y caen a `menu.getProducts` si falla.
 - `createDish`/`updateDish` aceptan `ingredient:[{id,type,brutto,netto,lock}]`: con eso la receta se conserva al ocultar.
@@ -71,6 +72,7 @@ API: `https://<cuenta>.joinposter.com/api/<metodo>?token=…`. Escrituras con cu
   `{prepack_id, product_id, product_name, prepack_unit, out, ingredient:[{id:number, type, brutto, netto, lock, unit}]}`.
   `prepack_unit` (no `unit`), `out` = rendimiento. Las líneas se leen en kg/l pero se escriben en g/ml.
   (También se vio aceptado `id: "1_97"` = `<tipo>_<id>`; aquí se usa `id` numérico + `type`.)
+- Métodos de proceso (`clear`, `cook`, `fry`, `stew`, `bake`; se leen como `pr_in_*`): las reescrituras de receta (`update_prepack`, `hide_dish`, `update_dish_recipe`) reenvían los métodos de cada línea tal como se leyeron. La verificación avisa si un método enviado o un neto manual (lock 0) vuelve distinto; un método enviado que no se puede releer se lista como no verificado, y un método que falta en la receta leída se lista como no conservado (Póster puede reiniciarlo). Una línea existente con neto manual (lock 0) se envía con los valores por defecto cuando no se pasan: neto igual al bruto sin `netto` y, en `update_dish_recipe`, también lock 1 sin `lock`. Su neto manual puede perderse entonces; el dry-run lo avisa. `create_prepack` y `create_dish` todavía no pueden fijar métodos.
 
 **Compras e inventario**
 - `storage.getSupplies` (lista): `supply_sum` en **centavos**.

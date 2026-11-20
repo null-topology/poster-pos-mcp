@@ -308,7 +308,7 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
       cuenta: cuentaEscritura,
       product_id: z.number().int(),
       nombre: z.string().min(1).optional(),
-      rendimiento: z.number().positive().optional(),
+      rendimiento: z.number().positive().optional().describe("Requested yield (out). Poster recalculates the yield from the lines' netto, so a yield passed here may not be kept; the read-back reports the yield Poster kept."),
       receta: z.array(z.object({ ingredient_id: z.number().int(), tipo: z.number().int().min(1).max(2).optional(), brutto: z.number().positive(), netto: z.number().positive().optional(), unidad: z.enum(["g", "ml", "p"]).optional(), lock: z.number().int().min(0).max(1).optional() })).min(1).optional(),
       ...escritura,
     },
@@ -393,9 +393,18 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
   s.registerTool("update_dish_recipe", {
     title: "Actualizar receta y grupos de un platillo",
     description:
-      "menu.updateDish COMPLETO para un platillo con receta: reemplaza receta y grupos de modificadores (ej. sacar el empaque de la receta y agregar el grupo \"Servicio\" con En local / Para llevar). " +
-      "Conserva nombre, categoría, precio y visibilidad. Muestra antes/después legible; tras aplicar relee y verifica. Dry-run por defecto.",
-    inputSchema: { cuenta: cuentaEscritura, product_id: z.number().int(), receta: z.array(lineaReceta).min(1), grupos: grupoSchema, ...escritura },
+      "menu.updateDish with the full payload for a dish with a recipe: replaces the recipe and keeps name, category, price and visibility. " +
+      "Omit grupos to keep the current modifier groups and options: they are re-sent with their ids. Passing grupos replaces the set: a group whose name matches a current one " +
+      "(trimmed, case-insensitive) keeps its id and, within it, an option with the same item and option type keeps its id; the others are created, and the current groups and " +
+      "options not passed are removed (grupos: [] removes them all). The dry-run lists the kept, created and removed groups and options under modifier_groups and shows a " +
+      "readable before/after; after applying it reads the dish back and verifies it. Dry-run by default.",
+    inputSchema: {
+      cuenta: cuentaEscritura,
+      product_id: z.number().int(),
+      receta: z.array(lineaReceta).min(1),
+      grupos: grupoSchema.optional().describe("Omit to keep the current modifier groups and options. When passed, it replaces the set; [] removes every group."),
+      ...escritura,
+    },
     annotations: ESCRITURA,
   }, envolver((a, extra) => W.actualizarRecetaPlatillo(ctx(extra), a)));
 
