@@ -138,4 +138,11 @@ describe("C piece ingredients without a piece weight", () => {
       expect(dry.zero_piece_weight).toEqual([BUN]);
     }
   });
+
+  it("C7 the piece unit is compared trimmed and case-folded", async () => {
+    for (const ingredient_unit of [" p", "P", " P \n"]) {
+      const { dry } = await both("create_prepack", INGREDIENTS({ ingredient_unit }), [{ ingredient_id: 4201, brutto: 2 }]);
+      expect(dry.zero_piece_weight, JSON.stringify(ingredient_unit)).toEqual([BUN]);
+    }
+  });
 });

@@ -51,8 +51,11 @@ Acceptance:
 - Fixed line: the ingredient as type 4, quantity 1, unit price 1.00 in the variant's unit. A fixed comment
   `write probe` marks the supply so it can be found and deleted. `account_id` is never sent: a paid supply posts an
   expense.
-- Variants:
-  - `documented`: JSON `{"supply": {"date", "supplier_id", "storage_id", "supply_comment"}, "ingredient": [{"id", "type": 4, "num": 1, "sum": 1}]}`.
+- Variants, in this order in the tool, its description and the docs:
+  - `documented`: JSON `{"supply": {"date", "supplier_id", "storage_id", "supply_comment"}, "ingredient": [{"id", "type": 4, "num": 1, "sum": 1}]}`,
+    as the docs example places the line.
+  - `documented_nested`: JSON `{"supply": {"date", "supplier_id", "storage_id", "supply_comment", "ingredient": [{"id", "type": 4, "num": 1, "sum": 1}]}}`,
+    as the parameter table of `storage.createSupply` lists `ingredient` inside `supply`.
   - `documented_flat`: JSON `{"date", "supplier_id", "storage_id", "supply_comment", "ingredient": [{"id", "type": 4, "num": 1, "sum": 1}]}`.
   - `form_ingredient`: multipart, flat fields `date`, `supplier_id`, `storage_id`, `supply_comment`, and `ingredient` = the line array as a JSON string, `sum` 1.
   - `legacy_unscaled`: multipart exactly as `create_supply` sends today (`ingredients` = JSON string), but `sum` 1, not 100.
@@ -63,14 +66,28 @@ Acceptance:
 ### Probe `transaction_edit`
 - Fields: `transaction_id`, `dia` (`YYYY-MM-DD`, the transaction's day).
 - The server reads `finance.getTransactions` for that day (`dateFrom` = `dateTo` = `dia` as `Ymd`) and finds the row
-  by id. It refuses unless the row exists, its type is 0 (expense) or 1 (income), the absolute `amount` is at most
-  100 kopecks, and its `comment` contains `probe` (case-insensitive). A transfer is refused.
+  by id. Before anything is sent it refuses unless:
+  - the row exists on that day; the not-found error says the row may be on another day and to check `dia`;
+  - its type is 0 (expense) or 1 (income); a transfer (type 2) is refused;
+  - `binding_type` and `recipient_type` are each 0 or absent. Any other value, documented or not, read as a number
+    or not, is refused (fail closed). The docs list binding 1 transfer, 12 shift closing, 13 supply, 14 shift
+    transactions and recipient 1 transfer, 12 supplier; their examples also show 11 and 15. The error names the
+    field and its value only;
+  - the absolute `amount` is at most 100 kopecks;
+  - its `comment`, trimmed and case-folded, is exactly `write probe`. A comment that only contains the words, such
+    as "Replacement temperature probe" or "my write probe", is refused;
+  - `account_id`, `category_id` and `user_id` are positive and the row's date is on `dia`.
+- The target is made by hand: the operator creates a new expense of at most 1.00 in the Poster web UI with the
+  comment `write probe`, and passes its id and day. A row Poster made itself (a supply, a shift closing, a
+  transfer) is never a target.
 - Body, JSON, per the docs example: `transaction_id`, `type`, `category` (the row's `category_id`), `user_id`, `date`
   (the row's day as `Ymd`); for type 0 `amount_from` and `account_from` (the row's `account_id`); for type 1
   `amount_to` and `account_to`. Only the amount changes, to 2.00:
   - `amount_currency`: the amount is sent as 2.
   - `amount_kopecks`: the amount is sent as 200.
-- Read-back: the same day's row by id, returned as read (redacted). `ok` is true when the row reads back.
+- Read-back: the same day's row by id, returned as read (redacted). `ok` is true when the row reads back. When it
+  does not, the result carries a `note` that the edit may have moved the row to another day, to be read with another
+  `dia` before the next variant.
 
 ### Results
 - Dry-run returns the probe, variant, method, encoding (`json` | `multipart`), the exact wire body (multipart fields
@@ -79,8 +96,26 @@ Acceptance:
   the probe supply in the web UI after reading it back.
 - Every outcome after a POST (applied, rejected, unknown) carries the HTTP status and the redacted reply. The
   transport reports the status for this tool; other tools' results are unchanged by this.
+- Redirects: the probe POST is sent with `redirect: "manual"`, so fetch does not follow it. A 3xx status, status 0
+  or an `opaqueredirect` response is an unknown outcome carrying that status; no read-back runs. The transport only
+  passes the option through to fetch. Other writes keep following redirects.
+- The outcome comes first: classification (rejected when the reply carries an error; unknown when it has no
+  `response` and `success` is not 1, or when `response` is `false` or `null`; applied otherwise) and the audit entry do not depend on formatting
+  the reply. Formatting is best effort: a reply that cannot be formatted (for example one nested too deeply) is
+  shown as `reply could not be formatted`. Any failure after the POST returned is an unknown outcome, never a
+  rejection.
+- Diagnostics: the `reply`, the status note of an unknown outcome and the read-back rows mask the value under any
+  key matching `token|secret|password|passwd|api_?key|authorization` (case-insensitive) as `***`, then apply the
+  shared redaction. The shared redaction itself is unchanged.
+- The status note of an unknown outcome keeps the masked, redacted reply up to 2000 characters; a longer reply is
+  clipped and marked `[clipped at 2000 characters]`. This covers a JSON reply the write handler receives (status
+  below 500); a 5xx or non-JSON reply is summarised by the transport (see Limitations). Other tools carry no status
+  note.
 - New keys, notices, errors and the description are English. The description says the tool is experimental, off by
-  default, sends a fixed tiny write, never pays a supply, and that the supply has to be deleted by hand.
+  default, sends a fixed tiny write, never pays a supply, and that the supply has to be deleted by hand. It lists the
+  supply variants in the order above, says the transaction target is a new expense of at most 1.00 made by hand in
+  the web UI with the comment `write probe` and `binding_type` / `recipient_type` 0 or absent, and that the probe
+  POST does not follow redirects.
 
 ### Docs
 - `.env.example`: commented `EXPERIMENTAL_WRITE_PROBE=1` with one line on what it does.
@@ -94,11 +129,21 @@ Acceptance:
   quantity 1, price 1 and the comment marker are fixed and cannot be set by the caller.
 - The supply probe refuses a missing storage, supplier or ingredient, and a missing or malformed `fecha`, before
   any POST.
-- The transaction probe refuses a missing row, a transfer, an amount above 100 kopecks and a comment without the
-  marker, before any POST; each variant's body is pinned.
+- The transaction probe refuses, before any POST: a missing row (the error points at another day and `dia`), a
+  transfer, a type other than 0 or 1, a non-zero `binding_type` or `recipient_type` (13, 12, 14, 1, 15 and others,
+  as text or number), an amount above 100 kopecks, a comment other than `write probe` once trimmed and case-folded
+  (including one that only contains the words), a non-positive account, category or user id, and the same id read
+  on another day. `binding_type` / `recipient_type` 0 or absent let the edit through. Each variant's body is pinned.
 - A confirmed call sends exactly one POST with the variant's encoding (JSON content type, or form data); the
   read-back runs only with a positive id; applied, rejected and unknown results carry the status and the redacted
-  reply; a token inside the reply is redacted.
+  reply; a token inside the reply or a read-back row is redacted; a value under a credential-like key (for example
+  `access_token`) is masked.
+- The probe POST passes `redirect: "manual"` to fetch and other writes do not. Over a real 127.0.0.1 server
+  answering 307 to another path, the target is hit 0 times by the probe and the outcome is unknown with status 307;
+  another write still follows the redirect.
+- A reply too deeply nested to format gives the outcome its fields call for (unknown, rejected or applied) after one
+  POST, with the matching audit entry.
+- An unknown outcome's status note keeps a long reply up to 2000 characters, redacted before clipping, and marks it.
 - An account outside the write set is refused as for other writes.
 - Each test is seen failing against a wrong implementation.
 
@@ -133,3 +178,15 @@ Acceptance:
 - The probe finds which body Poster accepts; it does not prove the unit of `sum` or of transaction amounts. The
   read-back values and the web UI total have to be compared by hand.
 - A `packing` variant is left out until a supply entered in the web UI has been read.
+- Whether hand-made expenses read back with `binding_type` and `recipient_type` 0 is not confirmed on a live
+  account. The guard fails closed until it is; if they carry another value, the rule has to be revisited.
+- Redirects on ordinary writes are still followed by fetch; only the probe POST stops at a redirect.
+- Unit A stays global: no method is exempted from treating `false` or `null` as unknown without evidence of a real
+  success reply that carries one of them.
+- Credential-like keys are masked only in the probe's diagnostics. The audit entry and a transport error (a 5xx or
+  a non-JSON reply, summarised by the transport before `ejecutar` sees it) keep the shared redaction only, and the
+  status note of such an error carries no reply.
+- On a 5xx the probe still shows only the transport's excerpt of the reply (300 characters, 120 for a non-JSON
+  body), not the 2000-character reply and with no credential-key masking: the transport does not hand the body to
+  the write handler, and changing that is a transport change left out of this unit.
+- Unit C compares the unit `p` trimmed and case-folded.

@@ -442,15 +442,18 @@ export function crearServidorMcp(api: PosterApi = posterHttp) {
         "which request body Poster accepts; the caller picks the ids, the probe and one body variant, never the body. " +
         "probe supply: storage.createSupply with one ingredient line of quantity 1 at a unit price of 1 and the comment 'write probe'; " +
         "it never pays a supply (no account_id is sent), and the probe supply is deleted by hand in the Poster web UI after it is read back. " +
-        "Variants: documented, documented_flat (JSON), form_ingredient, legacy_unscaled (multipart). " +
-        "probe transaction_edit: finance.updateTransactions on an expense or income of that day whose amount is at most 100 kopecks " +
-        "and whose comment contains 'probe'; it sends the new amount 2 (amount_currency) or 200 (amount_kopecks). " +
-        "Every outcome after the POST carries the HTTP status and the reply. Dry-run by default; one variant per approval.",
+        "Variants: documented, documented_nested, documented_flat, form_ingredient, legacy_unscaled (the first three JSON, the last two multipart). " +
+        "probe transaction_edit: finance.updateTransactions on an expense or income of that day whose amount is at most 100 kopecks, " +
+        "whose whole comment is 'write probe' (trimmed, any case) and whose binding_type and recipient_type are 0 or absent; " +
+        "it sends the new amount 2 (amount_currency) or 200 (amount_kopecks). Make the target by hand in the Poster web UI: " +
+        "a new expense of at most 1.00 with the comment 'write probe'. " +
+        "The POST does not follow redirects: a redirect is an unknown outcome. Every outcome after the POST carries the HTTP status " +
+        "and the reply (credential-like keys masked, long replies clipped). Dry-run by default; one variant per approval.",
       inputSchema: {
         cuenta: cuentaEscritura,
         probe: z.enum(["supply", "transaction_edit"]),
         variant: z.enum(W.PROBE_VARIANTS).describe(
-          "supply: documented, documented_flat, form_ingredient, legacy_unscaled. transaction_edit: amount_currency, amount_kopecks.",
+          "supply: documented, documented_nested, documented_flat, form_ingredient, legacy_unscaled. transaction_edit: amount_currency, amount_kopecks.",
         ),
         storage_id: z.number().int().positive().optional().describe("supply: storage (storage.getStorages)"),
         supplier_id: z.number().int().positive().optional().describe("supply: supplier (storage.getSuppliers)"),

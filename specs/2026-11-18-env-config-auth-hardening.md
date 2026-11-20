@@ -418,7 +418,8 @@ Known limitations:
 - Result formatting of an extremely deeply nested reply can fail after a write was applied.
 - A digit-only token too long to be held exactly by a JSON number is not matched when a reply
   carries it as a number.
-- A write reply `{ response: null }` with no `error` counts as applied.
+- A write reply whose `response` is `false` or `null` and that carries no `error` is an unknown outcome, not an
+  applied write: no read-back runs and the caller is told to check with a read before any retry.
 - A `create_supply` read-back whose reply has no `supply_sum` reads the total as 0.
 - `leerProducto` falls back to `menu.getProducts` when `menu.getProduct` fails or does not return
   the requested product, and treats an absent product list as empty, so a read-back that gets no

@@ -411,6 +411,41 @@ describe("Y2 methods that could not be carried over are listed", () => {
   });
 });
 
+describe("Y10 a recipe read without its lines lists every sent line as not carried", () => {
+  const SENT = [{ ingredient_id: 501, brutto: 60, netto: 45, lock: 0 }, { ingredient_id: 504, tipo: 2, brutto: 15 }];
+  const EVERY_LINE = [{ ingredient: 501, type: 1, methods: ALL_METHODS }, { ingredient: 504, type: 2, methods: ALL_METHODS }];
+  /** The result of a call, or `{ refused }` with the message when it throws, so a refusal fails an assertion. */
+  const settled = (p: Promise<unknown>): Promise<any> => p.then((r) => r, (e: unknown) => ({ refused: String((e as Error)?.message ?? e) }));
+
+  it("Y10 update_dish_recipe, with or without grupos, lists every sent line when the dish reads with no ingredients list, and still sends", async () => {
+    for (const grupos of [undefined, []]) {
+      for (const confirm of [false, true]) {
+        const label = `grupos ${JSON.stringify(grupos)}, confirm ${confirm}`;
+        const { api, post, db } = fakeApi();
+        delete db["menu.getProducts"][0].ingredients;
+        const r = await settled(W.actualizarRecetaPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8001, receta: SENT, ...(grupos ? { grupos } : {}), confirm }));
+        expect(r.refused, label).toBeUndefined();
+        expect(r.modo, label).toBe(confirm ? "aplicado" : "dry-run");
+        expect(r.methods_not_carried, label).toEqual(EVERY_LINE);
+        expect(r.methods_not_carried_note, label).toMatch(/Poster may reset them/);
+        expect(post).toHaveBeenCalledTimes(confirm ? 1 : 0);
+      }
+    }
+  });
+
+  it("Y10 update_prepack lists every sent line when the prepack reads with no ingredients list, and still sends", async () => {
+    for (const confirm of [false, true]) {
+      const { api, post, db } = fakeApi();
+      delete db["menu.getPrepacks"][0].ingredients;
+      const r = await settled(W.actualizarPrecocinado(ctx(api), { cuenta: "cafe-04", product_id: 7001, receta: SENT, confirm }));
+      expect(r.refused, `confirm ${confirm}`).toBeUndefined();
+      expect(r.modo).toBe(confirm ? "aplicado" : "dry-run");
+      expect(r.methods_not_carried, `confirm ${confirm}`).toEqual(EVERY_LINE);
+      expect(post).toHaveBeenCalledTimes(confirm ? 1 : 0);
+    }
+  });
+});
+
 describe("Y3 the yield alert says the recipe was applied only when the recipe checks pass", () => {
   const sumNetto = (body: Obj) => body.ingredient.reduce((s: number, l: Obj) => s + l.netto, 0);
   const tampers: Array<[string, (ls: Obj[]) => void]> = [

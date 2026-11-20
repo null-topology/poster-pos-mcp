@@ -44,6 +44,12 @@ This change makes every rewrite send back the methods it read, and makes the rea
     - The tool description and both READMEs say: omit `grupos` to keep the current groups; passing `grupos` replaces the set.
 14. `create_prepack` and `create_dish` payloads stay as they are.
 15. Both READMEs state what recipe rewrites keep and report, that a kept manual-net line passed without lock and netto is sent with the defaults, and that the create tools cannot set methods yet.
+16. Complete pre-read. `hide_dish` and `update_dish_recipe` send a full `menu.updateDish` body, in which anything not read is sent as a default (price 0, visible, workshop 1, grey, no recipe lines, no groups). The read reports where the dish came from: the detail read `menu.getProduct`, or the `menu.getProducts` list row when the detail read fails or gives another product.
+    - From the list row, both tools (with or without `grupos`) require `ingredients`, `group_modifications` and `spots` as lists, `price` as a non-empty object and a present `menu_category_id`. Otherwise they refuse before any POST: the dish could not be read completely, nothing was sent, retry.
+    - A detail read is authoritative for the two top-level lists: an absent `ingredients` or `group_modifications` there means the dish has none.
+    - On the paths that keep the read groups (`hide_dish`; `update_dish_recipe` without `grupos`), from either read, every kept group needs a `modifications` list and a positive `dish_modification_group_id`, and every kept option a positive `dish_modification_id`. Otherwise the tool refuses before any POST and names the group or option.
+17. A recipe read without an `ingredients` list cannot carry any method over. `update_dish_recipe` (with or without `grupos`) and `update_prepack` then list every sent line under `methods_not_carried`, with all five methods, in the dry-run and the applied result. This is a report only; the write is not refused.
+18. Kept zero values. A read option `brutto` and a read group `num_max` (sent as `num_max` and `maxNum`) are re-sent as read when they are finite numbers, 0 included; the default 1 applies only when the value is missing or not numeric. `num_min` / `minNum` already keep a read number, 0 included. Each kept zero is listed under `kept_zero_values` (`{ group, field: "num_max" }` or `{ group, option, field: "brutto" }`) in the dry-run and the applied result of `hide_dish`, `update_dish_recipe` without `grupos` and `update_dish`, so the change is visible. With no zero the key is absent.
 
 ## Acceptance
 
@@ -61,6 +67,10 @@ This change makes every rewrite send back the methods it read, and makes the rea
 - The manual-net notice appears for a kept lock-0 line sent with defaults, and not when the caller passes lock 0 and netto.
 - `update_dish_recipe` without `grupos` sends the same groups as `hide_dish` and keeps every id; with `grupos`, a same-name group and a same-option keep their ids, the rest are created or removed as listed in `modifier_groups`; an id is claimed once; `grupos: []` removes all; a recreated id is listed under `group_ids_changed`.
 - `create_prepack` and `create_dish` payloads are byte-identical to before for the same input.
+- With `menu.getProduct` failing, an identity-only list row (or one missing any field of requirement 16) makes `hide_dish` and `update_dish_recipe`, with or without `grupos`, refuse with no POST; a complete list row still applies with one POST and keeps the group ids; a detail read without the two lists goes on with no recipe lines and no groups.
+- On a keep path, a group without a `modifications` list, or a group or option without a positive id, refuses with no POST, from a detail read and from a list row. With `grupos` passed, such a group or option is created rather than kept.
+- A recipe read without `ingredients` lists every sent line under `methods_not_carried` for `update_dish_recipe` and `update_prepack`, and still sends.
+- A read `brutto` or `num_max` of `"0"`, `0` or `" 0 "` is sent as 0 by `hide_dish`, `update_dish_recipe` without `grupos` and `update_dish`, and listed in `kept_zero_values`; a missing or non-numeric value is sent as 1 and not listed.
 - Each new test fails against the code before this change, except the pins that guard the read-back branches.
 - Fixtures use made-up names and ids.
 
@@ -74,3 +84,8 @@ This change makes every rewrite send back the methods it read, and makes the rea
 - Group names are matched after trim and case folding only; names that differ in accents do not match.
 - `group_ids_changed` is a report and does not fail `ok`.
 - Methods and loss rates cannot be set through the create tools or on ingredients yet.
+- Whether `menu.getProduct` returns `ingredients` and `group_modifications` for a dish with no recipe or no modifiers is not verified live; the detail read is trusted to mean none when they are absent.
+- The docs do not say whether a `brutto` or `num_max` of 0 is valid. Kept zeros are re-sent as read and listed in `kept_zero_values`, to be checked on a live account.
+- Group and option `type` are still re-sent with their old defaults (1) when the read value is 0 or missing; which write code a read `type` stands for is not settled offline.
+- `update_dish` reads only the `menu.getProducts` row and trusts its `ingredients` for the "has a recipe" refusal; the complete pre-read rule does not cover it.
+- The comment above the menu creation section of `src/tools/escritura.ts` cites a script that is not in the repository; it is left as it is until the comments are rewritten in English.

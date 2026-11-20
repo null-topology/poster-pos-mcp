@@ -298,3 +298,217 @@ describe("Y9 option type matching: a read option of type 1 or 10 counts as an in
     expect(dry.modifier_groups.created_options).toEqual([{ group: "Sample sauces", name: "Dip base" }]);
   });
 });
+
+/**
+ * The same fake with menu.getProduct failing, so the tools fall back to the menu.getProducts list; `row` reshapes the
+ * list row the dish is read from.
+ */
+function detailDown(row: (p: Obj) => Obj = (p) => p) {
+  const f = fakeApi();
+  const get = vi.fn(async (account: string, method: string, params?: Record<string, string | number>) => {
+    if (method === "menu.getProduct") throw new Error("menu.getProduct: sample outage");
+    const read = await f.api.get<any>(account, method, params);
+    return method === "menu.getProducts" ? read.map((p: Obj) => row(p)) : read;
+  });
+  return { ...f, api: { get, post: f.api.post } as PosterApi };
+}
+/** The list row with only the identity fields, as a thin menu.getProducts row may come. */
+const identityOnly = (p: Obj): Obj => ({
+  product_id: p.product_id, type: p.type, product_name: p.product_name, menu_category_id: p.menu_category_id,
+  workshop: p.workshop, price: p.price, spots: p.spots,
+});
+const without = (key: string) => (p: Obj): Obj => {
+  const { [key]: _gone, ...rest } = p;
+  return rest;
+};
+/** The three rewrites of the whole dish that read it first, dry-run and confirmed. */
+const rewrites = (confirm: boolean) => [
+  (api: PosterApi) => W.ocultarPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8101, confirm }),
+  (api: PosterApi) => W.actualizarRecetaPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8101, receta: RECIPE, confirm }),
+  (api: PosterApi) => W.actualizarRecetaPlatillo(ctx(api), {
+    cuenta: "cafe-04", product_id: 8101, receta: RECIPE, confirm,
+    grupos: [{ nombre: "Sample sauces", min: 0, max: 2, opciones: [{ ingredient_id: 531, nombre: "Extra cheese", brutto: 20, precio: 15 }] }],
+  }),
+];
+/** The rewrites that keep the read groups: hide_dish and update_dish_recipe without grupos. */
+const keepPaths = (confirm: boolean) => rewrites(confirm).slice(0, 2);
+/** The result of a call, or `{ refused }` with the message when it throws, so a refusal fails an assertion. */
+const settled = (p: Promise<unknown>): Promise<any> => p.then((r) => r, (e: unknown) => ({ refused: String((e as Error)?.message ?? e) }));
+
+describe("Y10 a whole-dish rewrite needs a complete read of the dish", () => {
+  it("Y10 menu.getProduct fails and the list row has only the identity fields: hide_dish and update_dish_recipe (with or without grupos) refuse before any POST", async () => {
+    for (const confirm of [false, true]) {
+      for (const [i, run] of rewrites(confirm).entries()) {
+        const { api, post } = detailDown(identityOnly);
+        await expect(run(api), `call ${i}, confirm ${confirm}`).rejects.toThrow(/could not be read completely.*retry/is);
+        expect(post).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("Y10 a list row missing any of ingredients, group_modifications, spots, price or menu_category_id refuses before any POST", async () => {
+    const thin: Array<[string, (p: Obj) => Obj]> = [
+      ["no ingredients", without("ingredients")],
+      ["ingredients null", (p) => ({ ...p, ingredients: null })],
+      ["no group_modifications", without("group_modifications")],
+      ["group_modifications not a list", (p) => ({ ...p, group_modifications: {} })],
+      ["no spots", without("spots")],
+      ["spots not a list", (p) => ({ ...p, spots: "1" })],
+      ["no price", without("price")],
+      ["empty price", (p) => ({ ...p, price: {} })],
+      ["price a list", (p) => ({ ...p, price: [] })],
+      ["no menu_category_id", without("menu_category_id")],
+      ["empty menu_category_id", (p) => ({ ...p, menu_category_id: "" })],
+    ];
+    for (const [label, row] of thin) {
+      for (const [i, run] of rewrites(true).entries()) {
+        const { api, post } = detailDown(row);
+        await expect(run(api), `${label}, call ${i}`).rejects.toThrow(/could not be read completely/);
+        expect(post, `${label}, call ${i}`).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("Y10 a complete list row still works: each rewrite applies with one POST and keeps the groups", async () => {
+    for (const [i, run] of rewrites(true).entries()) {
+      const { api, post, db } = detailDown();
+      const r = await settled(run(api));
+      expect(r.refused, `call ${i}`).toBeUndefined();
+      expect(r.modo, `call ${i}`).toBe("aplicado");
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(idsOf(db["menu.getProducts"][0])[0][0], `call ${i}`).toBe(4101);
+    }
+  });
+
+  it("Y10 a detail read without ingredients or group_modifications means none: both rewrites go on with no recipe lines read and no groups", async () => {
+    const { api, post, db } = fakeApi();
+    const p = db["menu.getProducts"][0];
+    delete p.ingredients;
+    delete p.group_modifications;
+    const hidden = await settled(W.ocultarPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8101 }));
+    expect(hidden.refused).toBeUndefined();
+    expect(hidden.payload.modificationgroup).toEqual([]);
+    expect(hidden.payload["ingredient[]"]).toEqual([]);
+    const recipe = await settled(W.actualizarRecetaPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8101, receta: RECIPE }));
+    expect(recipe.refused).toBeUndefined();
+    expect(recipe.modo).toBe("dry-run");
+    expect(groupsOf(recipe)).toEqual([]);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("Y10 on a keep path, a read group without a modifications list refuses before any POST, from a detail read and from a list row", async () => {
+    const noList = (p: Obj): Obj => {
+      delete p.group_modifications[1].modifications;
+      return p;
+    };
+    for (const [i, run] of keepPaths(true).entries()) {
+      const detail = fakeApi();
+      noList(detail.db["menu.getProducts"][0]);
+      await expect(run(detail.api), `detail, call ${i}`).rejects.toThrow(/could not be read completely.*"Sample dips".*modifications/s);
+      expect(detail.post).not.toHaveBeenCalled();
+      const list = detailDown(noList);
+      await expect(run(list.api), `list, call ${i}`).rejects.toThrow(/could not be read completely.*"Sample dips".*modifications/s);
+      expect(list.post).not.toHaveBeenCalled();
+    }
+  });
+
+  it("Y10 on a keep path, a read group or option without a positive id refuses before any POST", async () => {
+    const cases: Array<[string, (p: Obj) => void, RegExp]> = [
+      ["group id 0", (p) => (p.group_modifications[0].dish_modification_group_id = 0), /dish_modification_group_id/],
+      ["group id missing", (p) => delete p.group_modifications[1].dish_modification_group_id, /dish_modification_group_id/],
+      ["group id not a number", (p) => (p.group_modifications[0].dish_modification_group_id = "abc"), /dish_modification_group_id/],
+      ["option id missing", (p) => delete p.group_modifications[0].modifications[1].dish_modification_id, /"Herb mix".*dish_modification_id/s],
+      ["option id 0", (p) => (p.group_modifications[1].modifications[0].dish_modification_id = "0"), /"Dip cup".*dish_modification_id/s],
+    ];
+    for (const [label, tamper, message] of cases) {
+      for (const [i, run] of keepPaths(true).entries()) {
+        const { api, post, db } = fakeApi();
+        tamper(db["menu.getProducts"][0]);
+        await expect(run(api), `${label}, call ${i}`).rejects.toThrow(message);
+        expect(post, `${label}, call ${i}`).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("Y10 with grupos passed, a read group or option without a positive id is not kept: the passed one is created and the read one listed as removed", async () => {
+    const { api, db } = fakeApi();
+    const sauces = db["menu.getProducts"][0].group_modifications[0];
+    sauces.dish_modification_group_id = 0;
+    db["menu.getProducts"][0].group_modifications[1].modifications[0].dish_modification_id = 0;
+    const dips = { nombre: "Sample dips", min: 0, max: 1, opciones: [{ ingredient_id: 534, tipo: "precocinado", nombre: "Dip cup", brutto: 30, precio: 10 }] };
+    const cheese = { ingredient_id: 531, nombre: "Extra cheese", brutto: 20, precio: 15 };
+    const dry: any = await W.actualizarRecetaPlatillo(ctx(api), {
+      cuenta: "cafe-04", product_id: 8101, receta: RECIPE, grupos: [{ nombre: "Sample sauces", min: 0, max: 2, opciones: [cheese] }, dips],
+    });
+    expect(groupsOf(dry)[0]).not.toHaveProperty("dish_modification_group_id");
+    expect(groupsOf(dry)[1].dish_modification_group_id).toBe(4102);
+    expect(groupsOf(dry)[1].modifications[0]).not.toHaveProperty("dish_modification_id");
+    expect(dry.modifier_groups.created_groups).toEqual([{ name: "Sample sauces" }]);
+    expect(dry.modifier_groups.kept_groups).toEqual([{ name: "Sample dips", id: 4102 }]);
+    expect(dry.modifier_groups.removed_groups).toEqual([{ name: "Sample sauces", id: 0 }]);
+    expect(dry.modifier_groups.created_options).toContainEqual({ group: "Sample dips", name: "Dip cup" });
+    expect(dry.modifier_groups.kept_options).toEqual([]);
+  });
+});
+
+describe("Y11 kept zero values are re-sent as read and listed", () => {
+  /** The wrap with a read num_max of the sauces group and a read brutto of its herb option set to `value`. */
+  const zeros = (db: Obj, value: unknown) => {
+    const sauces = db["menu.getProducts"][0].group_modifications[0];
+    sauces.num_max = value;
+    sauces.modifications[1].brutto = value;
+  };
+  const ZERO_LIST = [
+    { group: "Sample sauces", field: "num_max" },
+    { group: "Sample sauces", option: "Herb mix", field: "brutto" },
+  ];
+
+  it("Y11 a read brutto or num_max of 0 is sent as 0 by hide_dish and by update_dish_recipe without grupos, and listed in the dry-run and once applied", async () => {
+    for (const value of ["0", 0, " 0 "]) {
+      for (const [i, run] of keepPaths(false).entries()) {
+        const { api, db } = fakeApi();
+        zeros(db, value);
+        const dry: any = await run(api);
+        const sauces = groupsOf(dry)[0];
+        expect([sauces.num_max, sauces.maxNum, sauces.modifications[1].brutto], `${JSON.stringify(value)}, call ${i}`).toEqual([0, 0, 0]);
+        expect(dry.kept_zero_values, `${JSON.stringify(value)}, call ${i}`).toEqual(ZERO_LIST);
+      }
+    }
+    for (const [i, run] of keepPaths(true).entries()) {
+      const { api, post, db } = fakeApi();
+      zeros(db, "0");
+      const r: any = await run(api);
+      expect(r.modo, `call ${i}`).toBe("aplicado");
+      const sent = (post.mock.calls[0][2] as Obj).modificationgroup[0];
+      expect([sent.num_max, sent.maxNum, sent.modifications[1].brutto]).toEqual([0, 0, 0]);
+      expect(r.kept_zero_values, `call ${i}`).toEqual(ZERO_LIST);
+    }
+  });
+
+  it("Y11 update_dish keeps a read zero as well and lists it", async () => {
+    const { api, db } = fakeApi();
+    zeros(db, "0");
+    db["menu.getProducts"][0].ingredients = [];
+    const dry: any = await W.actualizarPlatillo(ctx(api), { cuenta: "cafe-04", product_id: 8101, nombre: "Sample wrap 2" });
+    const sauces = dry.payload.modificationgroup[0];
+    expect([sauces.num_max, sauces.maxNum, sauces.modifications[1].brutto]).toEqual([0, 0, 0]);
+    expect(dry.kept_zero_values).toEqual(ZERO_LIST);
+  });
+
+  it("Y11 a missing or non-numeric brutto or num_max keeps the old default 1 and is not listed", async () => {
+    for (const value of [undefined, null, "", "abc", true, {}]) {
+      for (const [i, run] of keepPaths(false).entries()) {
+        const { api, db } = fakeApi();
+        zeros(db, value);
+        if (value === undefined) {
+          delete db["menu.getProducts"][0].group_modifications[0].num_max;
+          delete db["menu.getProducts"][0].group_modifications[0].modifications[1].brutto;
+        }
+        const dry: any = await run(api);
+        const sauces = groupsOf(dry)[0];
+        expect([sauces.num_max, sauces.maxNum, sauces.modifications[1].brutto], `${JSON.stringify(value)}, call ${i}`).toEqual([1, 1, 1]);
+        expect(dry, `${JSON.stringify(value)}, call ${i}`).not.toHaveProperty("kept_zero_values");
+      }
+    }
+  });
+});

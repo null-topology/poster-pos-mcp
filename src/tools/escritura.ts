@@ -5,7 +5,7 @@
 //   · Every outcome (dry-run, aplicado, rechazado, desconocido) is audited without tokens. A write
 //     whose read-back fails stays aplicado, with verificacion.ok false.
 import type { PosterApi, PosterRespuesta } from "../poster.js";
-import { errorPoster, EscrituraIncierta, formFields, resumenPoster } from "../poster.js";
+import { EscrituraIncierta, formFields, resumenPoster } from "../poster.js";
 import { config, verificarEscritura } from "../config.js";
 import { auditar } from "../audit.js";
 import { redactar, redactarEstructura } from "../tokens.js";
@@ -38,10 +38,17 @@ interface Plan {
   /** Extra result keys shown in the dry-run only. */
   dryRun?: Obj;
   /**
-   * Every outcome after the POST carries the HTTP status and the redacted reply: `http_status` and `reply` when
-   * applied or rejected, and the same in the message of an unknown outcome.
+   * Every outcome after the POST carries the HTTP status and the redacted reply, with the values under credential-like
+   * keys masked: `http_status` and `reply` when applied or rejected, and the same in the message of an unknown outcome
+   * (the reply there bounded at NOTE_REPLY_MAX characters). A reply that cannot be formatted is shown as
+   * REPLY_UNFORMATTED; it never changes the outcome.
    */
   reportStatus?: boolean;
+  /**
+   * The POST is sent without following redirects (only with reportStatus): a redirect status (3xx, or 0 for an opaque
+   * redirect) is an unknown outcome carrying that status.
+   */
+  manualRedirect?: boolean;
   /** Lee de vuelta tras aplicar; devuelve lista de discrepancias (vacía = OK). */
   verificar?: (r: PosterRespuesta) => Promise<{ ok: boolean; detalle: unknown }>;
 }
@@ -49,18 +56,52 @@ interface Plan {
 const AVISO_SIN_RELECTURA =
   "La escritura se aplicó en Póster, pero no se pudo releer para verificarla. No la repitas: revisa el resultado con una lectura.";
 
-/** The HTTP status (none when no headers arrived) and the redacted reply of a write whose outcome is unknown. */
+/** Keys whose values a reporting plan's diagnostics mask, whatever the value looks like. */
+const CREDENTIAL_KEY = /token|secret|password|passwd|api_?key|authorization/i;
+/** Longest reply text, once redacted, kept in the status note of an unknown outcome. */
+const NOTE_REPLY_MAX = 2000;
+/** Fixed text in place of a reply that cannot be formatted. */
+const REPLY_UNFORMATTED = "reply could not be formatted";
+
+/** A copy of `v` whose values under credential-like keys are masked, at any depth. Deep nesting may throw. */
+function maskCredentialKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(maskCredentialKeys);
+  if (typeof v === "object" && v !== null) {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, CREDENTIAL_KEY.test(k) ? "***" : maskCredentialKeys(x)]));
+  }
+  return v;
+}
+
+/** A reply as a reporting plan shows it: credential-like keys masked, then redacted; a fixed text when it cannot be formatted. */
+function shownReply(reply: unknown): unknown {
+  try {
+    return redactarEstructura(maskCredentialKeys(reply));
+  } catch {
+    return REPLY_UNFORMATTED;
+  }
+}
+
+/**
+ * The HTTP status (none when no headers arrived) and the reply of a write whose outcome is unknown: credential-like
+ * keys masked, redacted, then bounded at NOTE_REPLY_MAX characters and marked when clipped.
+ */
 function statusNote(status: number | undefined, reply: PosterRespuesta | undefined) {
   let texto = ` HTTP status: ${status ?? "none"}.`;
   if (reply !== undefined) {
+    let shown: string;
     try {
-      texto += ` Reply: ${redactar(JSON.stringify(reply) ?? String(reply))}`;
+      const full = redactar(JSON.stringify(maskCredentialKeys(reply)) ?? String(reply));
+      shown = full.length > NOTE_REPLY_MAX ? `${full.slice(0, NOTE_REPLY_MAX)} [clipped at ${NOTE_REPLY_MAX} characters]` : full;
     } catch {
-      // The reply cannot be formatted; the message goes without it.
+      shown = REPLY_UNFORMATTED;
     }
+    texto += ` Reply: ${shown}`;
   }
   return texto;
 }
+
+/** A redirect status as fetch gives it when it does not follow: 3xx, or 0 for an opaque redirect. */
+const isRedirectStatus = (s: number | undefined) => s !== undefined && (s === 0 || (s >= 300 && s < 400));
 
 async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promise<Plan>) {
   const base = { actor: ctx.actor, cliente: ctx.cliente, cuenta: a.cuenta };
@@ -68,6 +109,8 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
   // HTTP status and reply of the POST, kept for a plan that reports them.
   let status: number | undefined;
   let reply: PosterRespuesta | undefined;
+  // Whether the POST returned: from then on any failure leaves the outcome unknown.
+  let posted = false;
   try {
     verificarEscritura(a.cuenta, a.permitir_otra_cuenta);
     plan = await construir();
@@ -87,36 +130,47 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
         siguiente_paso: "Revisa el diff. Para aplicar, repite la llamada con confirm: true.",
       };
     }
-    const opciones = plan.reportStatus ? { form: plan.form, onStatus: (s: number) => void (status = s) } : { form: plan.form };
+    const opciones = plan.reportStatus
+      ? { form: plan.form, onStatus: (s: number) => void (status = s), ...(plan.manualRedirect ? { redirect: "manual" as const } : {}) }
+      : { form: plan.form };
+    const reportStatus = plan.reportStatus === true;
     const r = await ctx.api.post(a.cuenta, plan.metodo, plan.payload, opciones);
     reply = r;
-    const sent = plan.reportStatus ? { http_status: status ?? null, reply: redactarEstructura(r) } : {};
-    const err = errorPoster(r);
-    if (err) {
-      auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err });
-      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err, payload: plan.payload, ...sent };
+    posted = true;
+    // The outcome is decided from the status and the reply's fields first; every text below is best effort and a
+    // failure to format one never changes the outcome.
+    if (plan.manualRedirect && isRedirectStatus(status)) {
+      throw new EscrituraIncierta(`Poster answered with a redirect (HTTP ${status}) that was not followed`);
     }
-    if (r.response === undefined && r.success !== 1) {
+    const cuerpo: PosterRespuesta = typeof r === "object" && r !== null ? r : {};
+    /** Summary of the reply for a message, or null when it cannot be formatted; a reporting plan masks credential-like keys. */
+    const resumen = (): string | null => {
+      try {
+        return resumenPoster(reportStatus ? maskCredentialKeys(cuerpo) : cuerpo);
+      } catch {
+        return null;
+      }
+    };
+    const sent = () => (reportStatus ? { http_status: status ?? null, reply: shownReply(r) } : {});
+    // The rule of errorPoster, decided on the field alone so that formatting the reply cannot change it.
+    const rechazo = cuerpo.error !== undefined && cuerpo.error !== null && cuerpo.error !== 0;
+    if (rechazo) {
+      const err = resumen() ?? REPLY_UNFORMATTED;
+      auditar({ ...base, herramienta, metodo: plan.metodo, modo: "rechazado", payload: plan.payload, resultado: r, error: err });
+      return { modo: "rechazado", cuenta: a.cuenta, metodo: plan.metodo, error: err, payload: plan.payload, ...sent() };
+    }
+    if (cuerpo.response === undefined && cuerpo.success !== 1) {
       // No error and no result: nothing shows the write was rejected, so its outcome is unknown.
       // The summary of the reply is best effort; a reply it cannot format still gives the unknown outcome.
-      let resumen = "";
-      try {
-        resumen = `: ${resumenPoster(r)}`;
-      } catch {
-        // The reply cannot be formatted; the message goes without it.
-      }
-      throw new EscrituraIncierta(`Póster respondió sin error y sin response${resumen}`);
+      const s = resumen();
+      throw new EscrituraIncierta(`Póster respondió sin error y sin response${s === null ? "" : `: ${s}`}`);
     }
-    if (r.response === false || r.response === null) {
+    if (cuerpo.response === false || cuerpo.response === null) {
       // No error, but no result either, whatever `success` says: nothing shows the write was applied or rejected.
-      let resumen = "";
-      try {
-        resumen = ` Reply: ${resumenPoster(r)}`;
-      } catch {
-        // The reply cannot be formatted; the message goes without it.
-      }
+      const s = resumen();
+      const resumenTexto = s === null ? "" : ` Reply: ${s}`;
       throw new EscrituraIncierta(
-        `Poster returned no result; the write may or may not have been applied. Check with a read before any retry.${resumen}`,
+        `Poster returned no result; the write may or may not have been applied. Check with a read before any retry.${resumenTexto}`,
       );
     }
     // The write went through: a failed read-back must not turn it into an error, or a retry duplicates it.
@@ -128,13 +182,14 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
       verificacion = { ok: false, detalle: redactar(String((e as Error)?.message ?? e)) };
       aviso = AVISO_SIN_RELECTURA;
     }
-    auditar({ ...base, herramienta, metodo: plan.metodo, modo: "aplicado", payload: plan.payload, resultado: { respuesta: r.response, verificacion } });
-    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: r.response, cambios, ...plan.report, verificacion, ...(aviso ? { aviso } : {}), ...sent };
+    auditar({ ...base, herramienta, metodo: plan.metodo, modo: "aplicado", payload: plan.payload, resultado: { respuesta: cuerpo.response, verificacion } });
+    return { modo: "aplicado", cuenta: a.cuenta, metodo: plan.metodo, respuesta: cuerpo.response, cambios, ...plan.report, verificacion, ...(aviso ? { aviso } : {}), ...sent() };
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     const herramienta = plan?.herramienta ?? "?";
-    if (e instanceof EscrituraIncierta && plan) {
-      // Attempted without a usable answer: neither applied nor rejected, and it must not be repeated blindly.
+    if ((e instanceof EscrituraIncierta || posted) && plan) {
+      // Attempted without a usable answer: neither applied nor rejected, and it must not be repeated blindly. A
+      // failure after the POST returned is never a rejection.
       auditar({ ...base, herramienta, metodo: plan.metodo, modo: "desconocido", payload: plan.payload, error: msg });
       throw new Error(
         `La escritura ${plan.metodo} en ${a.cuenta} puede haberse aplicado en Póster (${msg}). ` +
@@ -639,19 +694,20 @@ export function payloadUpdateDish(p: Obj) {
     out: num(p.out),
     price: Object.fromEntries(spots.map((s) => [s, num(precio[s])])),
     visible: Object.fromEntries(spots.map((s) => [s, vis[s] ?? 1])),
+    // A read num_max or brutto is kept as read, 0 included (see keptZeroValues); 1 only when missing or not numeric.
     modificationgroup: (p.group_modifications ?? []).map((g: Obj) => ({
       name: String(g.name).trim(),
       type: num(g.type) || 1,
       num_min: num(g.num_min),
-      num_max: num(g.num_max) || 1,
+      num_max: readOr(g.num_max, 1),
       minNum: num(g.num_min),
-      maxNum: num(g.num_max) || 1,
+      maxNum: readOr(g.num_max, 1),
       modifications: (g.modifications ?? []).map((m: Obj) => ({
         name: m.name,
         ingredientId: num(m.ingredient_id),
         ingredient_id: num(m.ingredient_id),
         type: num(m.type) || 1,
-        brutto: num(m.brutto) || 1,
+        brutto: readOr(m.brutto, 1),
         price: centavos(m.price), // leído en pesos → escrito en centavos
         sort_order: num(m.sort_order),
         _id: num(m.dish_modification_id), // solo para ubicar cambios; se quita antes de enviar
@@ -659,6 +715,26 @@ export function payloadUpdateDish(p: Obj) {
     })),
     "ingredient[]": [] as unknown[],
   };
+}
+
+/** A read value kept as the number it is, 0 included; `def` only when it is missing or not numeric. */
+function readOr(v: unknown, def: number): number {
+  const n = numeroLeido(v);
+  return typeof n === "number" ? n : def;
+}
+
+/**
+ * The read values of 0 a whole-dish rewrite re-sends as 0, by group and option name: a group's num_max and an option's
+ * brutto. Whether Poster takes 0 there is not documented, so the dry-run and the result list them.
+ */
+function keptZeroValues(groups: unknown) {
+  const list = (Array.isArray(groups) ? groups : []).flatMap((g: Obj) => [
+    ...(numeroLeido(g?.num_max) === 0 ? [{ group: String(g.name ?? "").trim(), field: "num_max" }] : []),
+    ...(Array.isArray(g?.modifications) ? g.modifications : []).flatMap((m: Obj) =>
+      numeroLeido(m?.brutto) === 0 ? [{ group: String(g.name ?? "").trim(), option: String(m.name ?? "").trim(), field: "brutto" }] : [],
+    ),
+  ]);
+  return list.length ? { kept_zero_values: list } : {};
 }
 
 const sinIds = (pl: ReturnType<typeof payloadUpdateDish>) => ({
@@ -711,6 +787,7 @@ export async function actualizarPlatillo(
       antes: sinIds(antes),
       despues: payload,
       avisos: ["updateDish reescribe el platillo completo; se reenvían grupos, precios y visibilidad actuales."],
+      report: keptZeroValues(p.group_modifications),
       verificar: async () => {
         const v = (await ctx.api.get<Obj[]>(a.cuenta, "menu.getProducts")).find((x) => num(x.product_id) === a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -816,10 +893,14 @@ function pairedExisting(requested: Array<{ ingredient_id: number; tipo?: number;
 const NOT_CARRIED_NOTE =
   "The current recipe read did not show these processing methods for these lines, so they are not sent and Poster may reset them. Check the lines in Poster.";
 
-/** Lines paired with an existing line whose methods were not all read: those methods cannot be carried over. */
-function methodsNotCarried(lines: Array<{ id: number; type: number }>, paired: Array<Obj | undefined>) {
+/**
+ * Lines paired with an existing line whose methods were not all read: those methods cannot be carried over. When the
+ * current recipe was read without an ingredients list (`recipeRead` false), no method was read for any line, so every
+ * line is listed with all of them.
+ */
+function methodsNotCarried(lines: Array<{ id: number; type: number }>, paired: Array<Obj | undefined>, recipeRead = true) {
   const list = lines.flatMap((l, i) => {
-    const methods = unknownMethods(paired[i]);
+    const methods = recipeRead ? unknownMethods(paired[i]) : [...METODOS];
     return methods.length ? [{ ingredient: l.id, type: l.type, methods }] : [];
   });
   return list.length ? { methods_not_carried: list, methods_not_carried_note: NOT_CARRIED_NOTE } : {};
@@ -994,7 +1075,11 @@ export async function actualizarPrecocinado(
       return { ingredient_id: l.ingredient_id, tipo, brutto: l.brutto, netto: l.netto ?? l.brutto, unidad: l.unidad ?? previo?.unidad ?? "g", lock: l.lock ?? previo?.lock ?? 0, metodos: previo?.metodos ?? {} };
     });
     if (!receta.length) throw new Error("La receta del precocinado no puede quedar vacía");
-    const report = methodsNotCarried(receta.map((l) => ({ id: l.ingredient_id, type: l.tipo })), partner.map((j) => (j >= 0 ? existing[j] : undefined)));
+    const report = methodsNotCarried(
+      receta.map((l) => ({ id: l.ingredient_id, type: l.tipo })),
+      partner.map((j) => (j >= 0 ? existing[j] : undefined)),
+      Array.isArray(p.ingredients),
+    );
     // A caller line without netto is sent with netto = brutto, even when it pairs with an existing manual-net line.
     const manualNetAtRisk = (a.receta ?? []).flatMap((l, i) => (isManualNet(existing[partner[i]]) && l.netto === undefined ? [claveLinea(l.tipo ?? 1, l.ingredient_id)] : []));
     // Contract: ingredient:[{id:number, type, brutto, netto, lock, unit, clear?, cook?, fry?, stew?, bake?}],
@@ -1044,16 +1129,56 @@ export async function actualizarPrecocinado(
 // (contratos probados en la temporada de otoño 2026: scripts/temporada-red.js)
 // ════════════════════════════════════════════════════════════════════════════
 
-/** Lee un producto: menu.getProduct (trae receta y grupos); si no responde, cae a la lista menu.getProducts. */
-export async function leerProducto(api: PosterApi, cuenta: string, productId: number): Promise<Obj | undefined> {
+/** Where a product was read: the detail read menu.getProduct or the list fallback menu.getProducts. */
+type ProductSource = "detail" | "list";
+
+/**
+ * Lee un producto: menu.getProduct (trae receta y grupos); si no responde, cae a la lista menu.getProducts. Reports
+ * which of the two the product came from.
+ */
+export async function leerProductoConFuente(api: PosterApi, cuenta: string, productId: number): Promise<{ producto: Obj | undefined; fuente: ProductSource }> {
   try {
     const p = await api.get<Obj>(cuenta, "menu.getProduct", { product_id: productId });
-    if (p && num(p.product_id) === productId) return p;
+    if (p && num(p.product_id) === productId) return { producto: p, fuente: "detail" };
   } catch {
     /* cae a la lista */
   }
   const prods = await api.get<Obj[]>(cuenta, "menu.getProducts");
-  return (prods ?? []).find((x) => num(x.product_id) === productId);
+  return { producto: (prods ?? []).find((x) => num(x.product_id) === productId), fuente: "list" };
+}
+
+/** The product as leerProductoConFuente reads it, without its source. */
+export async function leerProducto(api: PosterApi, cuenta: string, productId: number): Promise<Obj | undefined> {
+  return (await leerProductoConFuente(api, cuenta, productId)).producto;
+}
+
+/**
+ * Refuses, before any POST, a whole-dish menu.updateDish built from an incomplete read. A row from the list fallback
+ * must carry ingredients, group_modifications and spots as lists, a non-empty price map and menu_category_id; a detail
+ * read is authoritative, so an absent ingredients or group_modifications list there means none. With `keep` (the read
+ * groups are re-sent to keep them), every read group needs a modifications list and a positive id, and every option a
+ * positive id, from either read.
+ */
+function requireCompleteRead(p: Obj, fuente: ProductSource, keep: boolean) {
+  const refuse = (why: string): never => {
+    throw new Error(`The dish ${num(p.product_id)} could not be read completely: ${why}. Nothing was sent; retry.`);
+  };
+  if (fuente === "list") {
+    const missing: string[] = ["ingredients", "group_modifications", "spots"].filter((k) => !Array.isArray(p[k]));
+    const price = p.price;
+    if (typeof price !== "object" || price === null || Array.isArray(price) || !Object.keys(price).length) missing.push("price");
+    if (vacio(p.menu_category_id)) missing.push("menu_category_id");
+    if (missing.length) refuse(`menu.getProduct gave no usable answer and the menu.getProducts row lacks ${missing.join(", ")}`);
+  }
+  if (!keep) return;
+  for (const g of p.group_modifications ?? []) {
+    const group = `group "${String(g?.name ?? "").trim()}"`;
+    if (!Array.isArray(g?.modifications)) refuse(`${group} has no modifications list`);
+    if (idPositivo(g.dish_modification_group_id) === null) refuse(`${group} has no positive dish_modification_group_id`);
+    for (const m of g.modifications) {
+      if (idPositivo(m?.dish_modification_id) === null) refuse(`option "${String(m?.name ?? "").trim()}" of ${group} has no positive dish_modification_id`);
+    }
+  }
 }
 
 export interface LineaReceta {
@@ -1400,9 +1525,10 @@ export async function crearPlatillo(
 export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; sufijo?: string }) {
   return ejecutar(ctx, a, async () => {
     const sufijo = a.sufijo ?? " (old)";
-    const p = await leerProducto(ctx.api, a.cuenta, a.product_id);
+    const { producto: p, fuente } = await leerProductoConFuente(ctx.api, a.cuenta, a.product_id);
     if (!p) throw new Error(`Producto ${a.product_id} no existe en ${a.cuenta}`);
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
+    requireCompleteRead(p, fuente, true);
     const nombre = String(p.product_name).trim();
     const yaOculto = (p.spots ?? []).length > 0 && (p.spots ?? []).every((s: Obj) => String(s.visible) !== "1");
     if (yaOculto && nombre.endsWith(sufijo.trim())) throw new Error(`"${nombre}" ya está oculto y renombrado: nada que hacer.`);
@@ -1423,7 +1549,7 @@ export async function ocultarPlatillo(ctx: Contexto, a: BaseEscritura & { produc
       despues: payload,
       avisos: [`Se reenvía la receta (${receta.length} líneas) y ${grupos.length} grupos tal como están; solo cambian nombre y visibilidad.`],
       // Each re-sent line is the existing line itself, so its unread methods are the ones not carried.
-      report: methodsNotCarried(receta, p.ingredients ?? []),
+      report: { ...methodsNotCarried(receta, p.ingredients ?? []), ...keptZeroValues(p.group_modifications) },
       verificar: async () => {
         const v = await leerProducto(ctx.api, a.cuenta, a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -1488,14 +1614,16 @@ export async function borrarPlatilloOld(ctx: Contexto, a: BaseEscritura & { prod
 // current groups and options with their ids. Name, category, workshop, color, price and visibility are kept.
 export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura & { product_id: number; receta: LineaReceta[]; grupos?: GrupoAlta[] }) {
   return ejecutar(ctx, a, async () => {
-    const [p, prods, cat] = await Promise.all([
-      leerProducto(ctx.api, a.cuenta, a.product_id),
+    const [{ producto: p, fuente }, prods, cat] = await Promise.all([
+      leerProductoConFuente(ctx.api, a.cuenta, a.product_id),
       ctx.api.get<Obj[]>(a.cuenta, "menu.getProducts"),
       catalogoRecetas(ctx.api, a.cuenta),
     ]);
     if (!p) throw new Error(`Producto ${a.product_id} no existe en ${a.cuenta}`);
     if (num(p.type) !== 2) throw new Error(`"${p.product_name}" es tipo ${p.type}, no platillo (2).`);
     if (!a.receta.length) throw new Error("La receta no puede quedar vacía");
+    // Without grupos the read groups are re-sent to keep them, so they must be complete.
+    requireCompleteRead(p, fuente, a.grupos === undefined);
     const avisos: string[] = [];
     if (a.grupos !== undefined) {
       validarGrupos(a.grupos, cat, prods, avisos);
@@ -1549,7 +1677,12 @@ export async function actualizarRecetaPlatillo(ctx: Contexto, a: BaseEscritura &
           : "updateDish replaces the recipe and the modifier groups: a passed group or option that matches a current one keeps its id, the others are created, and the current groups and options not passed are removed (see modifier_groups). Name, price, category and visibility are kept.",
         ...(manualNetAtRisk.length ? [manualNetNotice(manualNetAtRisk, "lock 1 or netto = brutto (lock or netto not given)", "lock: 0 and netto")] : []),
       ],
-      report: { ...methodsNotCarried(receta, paired), modifier_groups: groupsReport, ...zeroPieceWeight(receta, cat.ings) },
+      report: {
+        ...methodsNotCarried(receta, paired, Array.isArray(p.ingredients)),
+        modifier_groups: groupsReport,
+        ...(a.grupos === undefined ? keptZeroValues(currentGroups) : {}),
+        ...zeroPieceWeight(receta, cat.ings),
+      },
       verificar: async () => {
         const v = await leerProducto(ctx.api, a.cuenta, a.product_id);
         if (!v) return { ok: false, detalle: "no aparece" };
@@ -1804,15 +1937,16 @@ export async function asignarPagoCompra(ctx: Contexto, a: BaseEscritura & { supp
 // ids, the probe and a body variant; the server builds the body from fixed values and reports the HTTP status, the
 // reply and what it reads back. Which variant Poster accepts is what the probe is for: nothing here assumes it.
 
-const SUPPLY_VARIANTS = ["documented", "documented_flat", "form_ingredient", "legacy_unscaled"] as const;
+const SUPPLY_VARIANTS = ["documented", "documented_nested", "documented_flat", "form_ingredient", "legacy_unscaled"] as const;
 const TRANSACTION_VARIANTS = ["amount_currency", "amount_kopecks"] as const;
 export const PROBE_VARIANTS = [...SUPPLY_VARIANTS, ...TRANSACTION_VARIANTS] as const;
 type SupplyVariant = (typeof SUPPLY_VARIANTS)[number];
 type TransactionVariant = (typeof TRANSACTION_VARIANTS)[number];
-/** Comment of every probe supply, so it can be found and deleted. */
+/**
+ * Comment of every probe supply, so it can be found and deleted, and the comment a transaction must carry (trimmed and
+ * case-folded, nothing else) before the probe edits it.
+ */
 const PROBE_COMMENT = "write probe";
-/** Marker a transaction's comment must contain (case-insensitive) before the probe edits it. */
-const PROBE_MARKER = "probe";
 /** Largest absolute amount, as read (kopecks), of a transaction the probe edits. */
 const PROBE_MAX_AMOUNT = 100;
 /** The new amount each transaction variant sends: 2.00 as currency units or as kopecks. */
@@ -1886,7 +2020,12 @@ async function supplyProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
   let form = false;
   switch (variant) {
     case "documented":
+      // As the docs example: ingredient next to supply.
       payload = { supply: flat, ingredient: [line] };
+      break;
+    case "documented_nested":
+      // As the docs parameter table: ingredient inside supply.
+      payload = { supply: { ...flat, ingredient: [line] } };
       break;
     case "documented_flat":
       payload = { ...flat, ingredient: [line] };
@@ -1914,6 +2053,7 @@ async function supplyProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
       notices: [...PROBE_NOTICES, ...SUPPLY_NOTICES],
     },
     reportStatus: true,
+    manualRedirect: true,
     verificar: async (r) => {
       const id = idPositivo(r.response);
       if (id === null) {
@@ -1925,7 +2065,7 @@ async function supplyProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
         ? s.ingredients.map((l: Obj) => ({ ingredient_id: l?.ingredient_id, supply_ingredient_num: l?.supply_ingredient_num, supply_ingredient_sum: l?.supply_ingredient_sum }))
         : s.ingredients;
       // As read, values untouched: what the units are is for the reader to judge.
-      const detalle = redactarEstructura({ supply_id: s.supply_id, date: s.date, supply_sum: s.supply_sum, ingredients: lines });
+      const detalle = redactarEstructura(maskCredentialKeys({ supply_id: s.supply_id, date: s.date, supply_sum: s.supply_sum, ingredients: lines }));
       return { ok: idPositivo(s.supply_id) === id, detalle };
     },
   };
@@ -1950,18 +2090,24 @@ async function transactionProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
   const rows: unknown = await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", params);
   if (!Array.isArray(rows)) throw new Error("finance.getTransactions did not return a list of transactions.");
   const row = findRow(rows);
-  if (!row) throw new Error(`Transaction ${id} was not found on ${dia}.`);
+  if (!row) throw new Error(`Transaction ${id} was not found on ${dia}. It may be on another day: check dia.`);
   const type = numeroLeido(row.type);
-  if (type === 2 || numeroLeido(row.recipient_type) === 1 || numeroLeido(row.binding_type) === 1) {
-    throw new Error(`Transaction ${id} is a transfer; the probe edits only an expense or an income.`);
+  if (type === 2) throw new Error(`Transaction ${id} is a transfer; the probe edits only an expense or an income.`);
+  // A row bound to a transfer, a shift, a supply or a supplier (or to anything else) is not a hand-made one: any value
+  // other than 0 refuses, so an undocumented one does too.
+  for (const field of ["binding_type", "recipient_type"] as const) {
+    const v = row[field];
+    if (v !== undefined && v !== null && numeroLeido(v) !== 0) {
+      throw new Error(`Transaction ${id} has ${field} ${JSON.stringify(v)}; the probe edits only a hand-made expense or income, with binding_type and recipient_type 0 or absent.`);
+    }
   }
   if (type !== 0 && type !== 1) throw new Error(`Transaction ${id} has a type other than 0 (expense) or 1 (income).`);
   const amount = numeroLeido(row.amount);
   if (typeof amount !== "number" || Math.abs(amount) > PROBE_MAX_AMOUNT) {
     throw new Error(`Transaction ${id} has an amount that is unreadable or above ${PROBE_MAX_AMOUNT} kopecks.`);
   }
-  if (!String(row.comment ?? "").toLowerCase().includes(PROBE_MARKER)) {
-    throw new Error(`Transaction ${id} has no "${PROBE_MARKER}" in its comment.`);
+  if (String(row.comment ?? "").trim().toLowerCase() !== PROBE_COMMENT) {
+    throw new Error(`Transaction ${id} has a comment other than "${PROBE_COMMENT}"; the probe edits only a row whose whole comment is "${PROBE_COMMENT}".`);
   }
   const account = idPositivo(row.account_id);
   const category = idPositivo(row.category_id);
@@ -1990,11 +2136,21 @@ async function transactionProbe(ctx: Contexto, a: ProbeArgs): Promise<Plan> {
       notices: PROBE_NOTICES,
     },
     reportStatus: true,
+    manualRedirect: true,
     verificar: async () => {
       const again: unknown = await ctx.api.get<Obj[]>(a.cuenta, "finance.getTransactions", params);
       if (!Array.isArray(again)) throw new Error("finance.getTransactions did not return a list of transactions.");
       const t = findRow(again);
-      return t ? { ok: true, detalle: redactarEstructura(t) } : { ok: false, detalle: { transaction_id: id, read: `finance.getTransactions for ${ymd}`, found: false } };
+      if (t) return { ok: true, detalle: redactarEstructura(maskCredentialKeys(t)) };
+      return {
+        ok: false,
+        detalle: {
+          transaction_id: id,
+          read: `finance.getTransactions for ${ymd}`,
+          found: false,
+          note: "The row was not on that day when read back; the edit may have moved it to another day. Read it with another dia before the next variant.",
+        },
+      };
     },
   };
 }

@@ -50,6 +50,10 @@ const SUPPLY_WIRE: Record<string, { encoding: string; wire: unknown }> = {
     encoding: "json",
     wire: `{"supply":{"date":"${FECHA}","supplier_id":21,"storage_id":7,"supply_comment":"write probe"},"ingredient":${LINE}}`,
   },
+  documented_nested: {
+    encoding: "json",
+    wire: `{"supply":{"date":"${FECHA}","supplier_id":21,"storage_id":7,"supply_comment":"write probe","ingredient":${LINE}}}`,
+  },
   documented_flat: {
     encoding: "json",
     wire: `{"date":"${FECHA}","supplier_id":21,"storage_id":7,"supply_comment":"write probe","ingredient":${LINE}}`,
@@ -71,7 +75,7 @@ const row = (id: number, o: Obj = {}) => ({
 });
 const ROWS = [
   row(9001),
-  row(9002, { type: "1", amount: "100", account_id: "5", category_id: "13", comment: "probe income" }),
+  row(9002, { type: "1", amount: "100", account_id: "5", category_id: "13", comment: "  write probe\n" }),
   row(9003, { amount: "-101" }),
   row(9004, { type: "2", amount: "-50" }),
   row(9005, { amount: "-50", recipient_type: "1" }),
@@ -463,8 +467,8 @@ describe("B transaction_edit probe", () => {
       ["missing row", { transaction_id: 9999 }, /not found/i],
       ["deleted row", { transaction_id: 9009 }, /not found/i],
       ["type 2", { transaction_id: 9004 }, /transfer/i],
-      ["recipient_type 1", { transaction_id: 9005 }, /transfer/i],
-      ["binding_type 1", { transaction_id: 9006 }, /transfer/i],
+      ["recipient_type 1", { transaction_id: 9005 }, /recipient_type "1"/],
+      ["binding_type 1", { transaction_id: 9006 }, /binding_type "1"/],
       ["expense of 101", { transaction_id: 9003 }, /100/],
       ["income of 101", { transaction_id: 9008 }, /100/],
       ["no marker", { transaction_id: 9007 }, /probe/],
@@ -556,5 +560,298 @@ describe("B write gate", () => {
     expect(body.wire_body).toEqual(SUPPLY_WIRE.form_ingredient.wire);
     expect(post).not.toHaveBeenCalled();
     expect(audit().map((l) => JSON.parse(l))).toMatchObject([{ herramienta: PROBE, modo: "dry-run", metodo: "storage.createSupply" }]);
+  });
+});
+
+describe("B transaction_edit target", () => {
+  const TX = { cuenta: "shop-b", probe: "transaction_edit" as const, dia: DIA, variant: "amount_currency", confirm: true };
+  /** A confirmed probe on row 9001 read with `o` over its defaults: the outcome and the POST mock. */
+  const on = async (o: Obj) => {
+    const { W } = await load();
+    const { post, api } = fakeApi({ response: 9001 }, { ...READS, "finance.getTransactions": [row(9001, o)] });
+    const r = await outcome(W.probarEscritura(ctx(api), { ...TX, transaction_id: 9001 } as any));
+    return { r, post };
+  };
+
+  it("B22 the comment must read exactly 'write probe' once trimmed and case-folded; a comment that only contains the word is refused before any POST", async () => {
+    for (const comment of ["Replacement temperature probe", "write probe test", "my write probe", "probe", "write  probe", "write-probe", "", undefined]) {
+      const { r, post } = await on({ comment });
+      expect(post, String(comment)).not.toHaveBeenCalled();
+      expect(r.thrown, String(comment)).toMatch(/comment/);
+    }
+    for (const comment of ["write probe", "  Write Probe\n", "WRITE PROBE"]) {
+      const { r, post } = await on({ comment });
+      expect(r.thrown, comment).toBeUndefined();
+      expect(post, comment).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("B23 a row whose binding_type or recipient_type is present and not 0 is refused before any POST; the error names the field and the value", async () => {
+    const CASES: [string, unknown][] = [
+      ["binding_type", "13"], ["binding_type", "12"], ["binding_type", "14"], ["binding_type", "1"], ["binding_type", "15"], ["binding_type", "11"],
+      ["binding_type", 13], ["binding_type", "abc"], ["binding_type", ""],
+      ["recipient_type", "12"], ["recipient_type", "1"], ["recipient_type", "15"], ["recipient_type", 12], ["recipient_type", "-1"],
+    ];
+    for (const [field, value] of CASES) {
+      const name = `${field} ${JSON.stringify(value)}`;
+      const { r, post } = await on({ [field]: value });
+      expect(post, name).not.toHaveBeenCalled();
+      expect(r.thrown, name).toContain(`${field} ${JSON.stringify(value)}`);
+    }
+  });
+
+  it("B24 binding_type and recipient_type read as 0 or absent let the edit through", async () => {
+    const CASES: Obj[] = [
+      { binding_type: "0", recipient_type: "0" },
+      { binding_type: 0, recipient_type: 0 },
+      { binding_type: undefined, recipient_type: undefined },
+      { binding_type: null, recipient_type: null },
+    ];
+    for (const o of CASES) {
+      const { r, post } = await on(o);
+      expect(r.thrown, JSON.stringify(o)).toBeUndefined();
+      expect(post, JSON.stringify(o)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("B25 refuses a type other than 0 or 1, a non-positive account, category or user id, and the same id read on another day, before any POST", async () => {
+    const CASES: [string, Obj, RegExp][] = [
+      ["type 3", { type: "3" }, /type other than 0/],
+      ["type empty", { type: "" }, /type other than 0/],
+      ["type -1", { type: "-1" }, /type other than 0/],
+      ["account_id 0", { account_id: "0" }, /positive account_id/],
+      ["account_id -3", { account_id: "-3" }, /positive account_id/],
+      ["category_id 0", { category_id: "0" }, /positive account_id/],
+      ["category_id empty", { category_id: "" }, /positive account_id/],
+      ["user_id 0", { user_id: "0" }, /positive account_id/],
+      ["user_id empty", { user_id: "" }, /positive account_id/],
+      ["another day", { date: "2026-11-17 23:59:00" }, /date on 2026-11-18/],
+      ["no date", { date: undefined }, /date on 2026-11-18/],
+    ];
+    for (const [name, o, error] of CASES) {
+      const { r, post } = await on(o);
+      expect(post, name).not.toHaveBeenCalled();
+      expect(r.thrown, name).toMatch(error);
+    }
+  });
+
+  it("B26 a row not found, before the edit or on the read-back, says it may be on another day and to check dia", async () => {
+    const { W } = await load();
+    const { post, api } = fakeApi();
+    const r = await outcome(W.probarEscritura(ctx(api), { ...TX, transaction_id: 9999 } as any));
+    expect(post).not.toHaveBeenCalled();
+    expect(r.thrown).toMatch(/another day/);
+    expect(r.thrown).toMatch(/\bdia\b/);
+    const get = fakeGet();
+    get.mockImplementationOnce(async () => structuredClone(ROWS));
+    get.mockImplementationOnce(async () => []);
+    const post2 = vi.fn(async () => ({ response: 9001 }));
+    const done = await outcome(W.probarEscritura(ctx({ get, post: post2 } as unknown as PosterApi), { ...TX, transaction_id: 9001 } as any));
+    expect(done.verificacion).toMatchObject({ ok: false, detalle: { transaction_id: 9001, found: false } });
+    expect(done.verificacion?.detalle?.note).toMatch(/another day/);
+    expect(done.verificacion?.detalle?.note).toMatch(/\bdia\b/);
+  });
+});
+
+describe("B supply variant with the line inside supply", () => {
+  it("B27 documented_nested puts the ingredient line inside supply, as the createSupply parameter table lists it, and is listed second", async () => {
+    const { W, M } = await load({ EXPERIMENTAL_WRITE_PROBE: "1" });
+    const ORDER = ["documented", "documented_nested", "documented_flat", "form_ingredient", "legacy_unscaled"];
+    expect(W.PROBE_VARIANTS.slice(0, 5)).toEqual(ORDER);
+    const { post, api } = fakeApi();
+    const dry = await outcome(W.probarEscritura(ctx(api), { ...SUPPLY, variant: "documented_nested" } as any));
+    expect(dry.thrown).toBeUndefined();
+    expect(dry).toMatchObject({ modo: "dry-run", encoding: "json", wire_body: SUPPLY_WIRE.documented_nested.wire });
+    expect(post).not.toHaveBeenCalled();
+    const client = await connect(M, api);
+    const tool = (await client.listTools()).tools.find((t) => t.name === PROBE);
+    expect(tool?.description).toContain(ORDER.join(", "));
+    expect(JSON.stringify(tool?.inputSchema)).toContain(`supply: ${ORDER.join(", ")}.`);
+    await client.close();
+  });
+});
+
+describe("B probe diagnostics", () => {
+  const fragment = "QxR7Sample";
+  const SECRET = "synthetic-upstream-value";
+  /** A confirmed documented supply probe whose POST goes through the real transport to `respond`. */
+  const run = async (respond: () => Response | Promise<Response>, reads: Obj = READS) => {
+    const L = await load();
+    const { posts } = fakeFetch(respond);
+    const { api, get } = transportApi(L.P, reads);
+    const r = await outcome(L.W.probarEscritura(ctx(api), { ...SUPPLY, variant: "documented", confirm: true } as any));
+    return { r, posts, get, modos: () => L.audit().map((l) => JSON.parse(l).modo), ...L };
+  };
+  /** A group creation (not the probe) whose POST goes through the real transport. */
+  const otherWrite = (L: { P: typeof import("../src/poster.js"); W: typeof import("../src/tools/escritura.js") }) => {
+    const get = vi.fn(async () => [] as unknown);
+    return outcome(L.W.crearGrupoCliente(ctx({ get, post: L.P.posterHttp.post } as unknown as PosterApi), {
+      cuenta: "shop-b", nombre: "Sample regulars", tipo: "descuento", porcentaje: 10, confirm: true,
+    }));
+  };
+
+  it("B28 the outcome does not depend on formatting the reply: a reply too deeply nested to format gives unknown, rejected or applied by its fields, after one POST", async () => {
+    const deep = (head: string) => `{${head},"detail":${"[".repeat(16000)}0${"]".repeat(16000)}}`;
+    const CASES: [string, string, string][] = [
+      ["no result", deep('"response":false'), "desconocido"],
+      ["error", deep('"error":32'), "rechazado"],
+      ["result", deep('"response":4501'), "aplicado"],
+    ];
+    for (const [name, body, modo] of CASES) {
+      const { r, posts, modos } = await run(() => new Response(body, { status: 200 }));
+      expect(posts(), name).toHaveLength(1);
+      expect(modos(), name).toEqual([modo]);
+      if (modo === "desconocido") expect(r.thrown, name).toMatch(/HTTP status: 200\./);
+      else expect(r, name).toMatchObject({ modo, http_status: 200, reply: "reply could not be formatted" });
+    }
+    // A reply that cannot even be classified after the POST is an unknown outcome, never a rejection.
+    const { W, audit } = await load();
+    const { api } = fakeApi(null as unknown as Obj);
+    const r = await outcome(W.probarEscritura(ctx(api), { ...SUPPLY, variant: "documented", confirm: true } as any));
+    expect(r.thrown).toMatch(/HTTP status: none\./);
+    expect(audit().map((l) => JSON.parse(l).modo)).toEqual(["desconocido"]);
+  });
+
+  it("B29 the probe POST asks fetch not to follow redirects and other writes do not; a 3xx or status 0 reply is unknown with its status", async () => {
+    {
+      const { posts } = await run(() => new Response(JSON.stringify({ response: 4501 })));
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0].redirect).toBe("manual");
+    }
+    {
+      const L = await load();
+      const { posts } = fakeFetch(() => new Response(JSON.stringify({ response: 9001 })));
+      const { api } = transportApi(L.P);
+      const r = await outcome(L.W.probarEscritura(ctx(api), {
+        cuenta: "shop-b", probe: "transaction_edit", dia: DIA, transaction_id: 9001, variant: "amount_currency", confirm: true,
+      } as any));
+      expect(r.modo).toBe("aplicado");
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0].redirect).toBe("manual");
+    }
+    {
+      const L = await load();
+      const { posts } = fakeFetch(() => new Response(JSON.stringify({ response: 31 })));
+      expect((await otherWrite(L)).modo).toBe("aplicado");
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0]).not.toHaveProperty("redirect");
+    }
+    const CASES: [number, string][] = [[302, '{"response":4501}'], [307, '{"response":4501}'], [308, ""], [0, '{"response":4501}'], [0, ""]];
+    for (const [status, body] of CASES) {
+      const name = `${status} ${body || "empty"}`;
+      // Status 0 is what an opaque redirect reads as; a Response cannot be built with it, so a stand-in is used.
+      const reply = status === 0 ? ({ status: 0, type: "opaqueredirect", headers: new Headers(), text: async () => body } as unknown as Response) : new Response(body, { status });
+      const { r, modos, get } = await run(() => reply);
+      expect(r.thrown, name).toContain(`HTTP status: ${status}.`);
+      expect(modos(), name).toEqual(["desconocido"]);
+      expect(get.mock.calls.filter((c) => c[1] === "storage.getSupply"), name).toHaveLength(0);
+    }
+  });
+
+  it("B30 over a real 127.0.0.1 server, a 307 on the probe POST is not followed: its target is hit 0 times and the outcome is unknown with status 307; another write still follows it", async () => {
+    const http = await import("node:http");
+    let targetHits = 0;
+    const server = http.createServer((req, res) => {
+      req.resume();
+      if (req.url?.startsWith("/target")) {
+        targetHits++;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"response":4501}');
+        return;
+      }
+      res.writeHead(307, { location: "/target", "content-type": "application/json" });
+      res.end('{"response":4501}');
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const realFetch = globalThis.fetch;
+      const L = await load();
+      // Only the origin changes; the init built by the transport goes to fetch untouched.
+      const swap = vi.fn((url: string | URL | Request, init?: RequestInit) => realFetch(String(url).replace(/^https:\/\/[^/]+/, `http://127.0.0.1:${port}`), init));
+      vi.stubGlobal("fetch", swap);
+      const { get, api } = transportApi(L.P);
+      const r = await outcome(L.W.probarEscritura(ctx(api), { ...SUPPLY, variant: "documented", confirm: true } as any));
+      expect(swap).toHaveBeenCalledTimes(1);
+      expect(targetHits).toBe(0);
+      expect(r.thrown).toContain("HTTP status: 307.");
+      expect(L.audit().map((l) => JSON.parse(l).modo)).toEqual(["desconocido"]);
+      expect(get.mock.calls.filter((c) => c[1] === "storage.getSupply")).toHaveLength(0);
+      // Other writes keep following redirects, a known limitation: the same 307 sends a group creation to the target.
+      await otherWrite(L);
+      expect(targetHits).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("B31 an unknown probe outcome keeps the redacted reply up to 2000 characters in the status note, marked when clipped", async () => {
+    const note = (thrown: string) => thrown.slice(thrown.indexOf(" HTTP status:"));
+    {
+      // The token crosses the 2000th character of the reply text: it is redacted before the reply is clipped.
+      const { r } = await run(() => new Response(JSON.stringify({ response: false, note: `${"x".repeat(1960)} ${TOKEN_B} ${"y".repeat(3000)}` }), { status: 200 }));
+      const n = note(r.thrown);
+      expect(n).toMatch(/^ HTTP status: 200\. Reply: \{"response":false,"note":"x{1960} \*\*\* y+/);
+      expect(n).toMatch(/clipped/);
+      expect(r.thrown).not.toContain(fragment);
+      expect(r.thrown).not.toContain("770055");
+      const reply = n.slice(" HTTP status: 200. Reply: ".length);
+      expect(reply.indexOf("y".repeat(5))).toBeGreaterThan(0);
+      expect(reply.lastIndexOf("y") + 1).toBe(2000);
+    }
+    {
+      const { r } = await run(() => new Response(JSON.stringify({ response: false, note: "short" }), { status: 200 }));
+      expect(note(r.thrown)).toBe(' HTTP status: 200. Reply: {"response":false,"note":"short"}');
+    }
+  });
+
+  it("B32 probe diagnostics mask values under credential-like keys in the reply, the error, the status note and the read-back rows; shared redaction is unchanged", async () => {
+    const creds = { access_token: SECRET, client_secret: SECRET, Password: SECRET, passwd: SECRET, api_key: SECRET, ApiKey: SECRET, Authorization: SECRET, nested: { refresh_TOKEN: SECRET } };
+    const supplyReads = { ...READS, "storage.getSupply": (p: Obj) => ({ supply_id: String(p.supply_id), date: FECHA, supply_sum: { api_key: SECRET, value: "1" }, ingredients: [] }) };
+    const CASES: [string, Obj, string][] = [
+      ["applied", { response: 4501, ...creds }, "aplicado"],
+      ["rejected", { error: 32, ...creds }, "rechazado"],
+      ["no result", { response: false, ...creds }, "desconocido"],
+      ["no response", { ...creds }, "desconocido"],
+    ];
+    for (const [name, body, modo] of CASES) {
+      const { r, modos } = await run(() => new Response(JSON.stringify(body), { status: 200 }), supplyReads);
+      expect(modos(), name).toEqual([modo]);
+      expect(JSON.stringify(r), name).not.toContain(SECRET);
+      if (modo !== "desconocido") expect(r.reply, name).toMatchObject({ access_token: "***", Authorization: "***", nested: { refresh_TOKEN: "***" } });
+      if (modo === "aplicado") expect(r.verificacion.detalle.supply_sum).toEqual({ api_key: "***", value: "1" });
+    }
+    const { W } = await load();
+    const { api } = fakeApi({ response: 9001 }, { ...READS, "finance.getTransactions": [row(9001, { access_token: SECRET, secret_note: SECRET })] });
+    const tx = (await W.probarEscritura(ctx(api), { cuenta: "shop-b", probe: "transaction_edit", dia: DIA, transaction_id: 9001, variant: "amount_currency", confirm: true } as any)) as Obj;
+    expect(tx.verificacion.detalle).toMatchObject({ transaction_id: "9001", access_token: "***", secret_note: "***" });
+    const T = await import("../src/tokens.js");
+    expect(T.redactarEstructura({ access_token: SECRET })).toEqual({ access_token: SECRET });
+  });
+
+  it("B33 a write other than the probe, answered with no result, carries no HTTP status note", async () => {
+    const L = await load();
+    fakeFetch(() => new Response(JSON.stringify({ response: false })));
+    const r = await otherWrite(L);
+    expect(r.thrown).toContain("Poster returned no result");
+    expect(r.thrown).not.toContain("HTTP status");
+  });
+
+  it("B34 a token in the supply read-back or in the transaction row read back is redacted", async () => {
+    const reads = {
+      ...READS,
+      "storage.getSupply": (p: Obj) => ({ supply_id: String(p.supply_id), date: `${FECHA} ${TOKEN_B}`, supply_sum: TOKEN_A,
+        ingredients: [{ ingredient_id: "4101", supply_ingredient_num: `token=${TOKEN_B}`, supply_ingredient_sum: "1.00" }] }),
+      "finance.getTransactions": [row(9001, { extra: `echo ${TOKEN_B}`, [TOKEN_A]: "1" })],
+    };
+    const { W } = await load();
+    const { api } = fakeApi({ response: 4501 }, reads);
+    const sup = (await W.probarEscritura(ctx(api), { ...SUPPLY, variant: "documented", confirm: true } as any)) as Obj;
+    const tx = (await W.probarEscritura(ctx(api), { cuenta: "shop-b", probe: "transaction_edit", dia: DIA, transaction_id: 9001, variant: "amount_currency", confirm: true } as any)) as Obj;
+    expect(sup.verificacion.detalle.supply_id).toBe("4501");
+    expect(tx.verificacion.detalle.transaction_id).toBe("9001");
+    expect(JSON.stringify(sup)).not.toContain(fragment);
+    expect(JSON.stringify(tx)).not.toContain(fragment);
   });
 });

@@ -5,8 +5,11 @@ export type PosterRespuesta<T = unknown> = { response?: T; success?: number; err
 
 export interface PosterApi {
   get<T = unknown>(cuenta: string, metodo: string, params?: Record<string, string | number>): Promise<T>;
-  /** `onStatus` gets the HTTP status of the reply as soon as its headers arrive; a request that fails before that has none. */
-  post<T = unknown>(cuenta: string, metodo: string, cuerpo: unknown, opciones?: { form?: boolean; onStatus?: (status: number) => void }): Promise<PosterRespuesta<T>>;
+  /**
+   * `onStatus` gets the HTTP status of the reply as soon as its headers arrive; a request that fails before that has none.
+   * `redirect`, when given, is passed to fetch as it is; without it fetch follows redirects.
+   */
+  post<T = unknown>(cuenta: string, metodo: string, cuerpo: unknown, opciones?: { form?: boolean; onStatus?: (status: number) => void; redirect?: RequestRedirect }): Promise<PosterRespuesta<T>>;
 }
 
 /** The multipart fields of a form body, in order: a string value as it is, any other value as JSON text. */
@@ -101,6 +104,7 @@ export const posterHttp: PosterApi = {
     } else {
       init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) };
     }
+    if (opciones.redirect !== undefined) init.redirect = opciones.redirect;
     // Escrituras: un solo intento por si Póster sí aplicó y solo tardó en responder (evita duplicados).
     // pedir has called fetch by the time it fails, so the outcome of the write is unknown.
     let r: Respuesta;
