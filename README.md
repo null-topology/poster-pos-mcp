@@ -93,7 +93,7 @@ These are values for the platform, not a script to run; each token goes in as it
 The server runs without a clone: `npx` fetches the repository at a tag, installs the dependencies, compiles TypeScript through the `prepare` script and starts the server. With the variables above set in the environment:
 
 ```bash
-npx -y github:null-topology/poster-pos-mcp#v0.5.1
+npx -y github:null-topology/poster-pos-mcp#v0.5.2
 ```
 
 - It needs Node.js 20 or later, `git` on the `PATH` and install scripts enabled (no `--ignore-scripts`). The first run builds the package; later runs reuse the npx cache.
@@ -108,7 +108,7 @@ To let an MCP client launch the server itself over stdio, set `MCP_TRANSPORT=std
   "mcpServers": {
     "poster": {
       "command": "npx",
-      "args": ["-y", "github:null-topology/poster-pos-mcp#v0.5.1"],
+      "args": ["-y", "github:null-topology/poster-pos-mcp#v0.5.2"],
       "env": {
         "MCP_TRANSPORT": "stdio",
         "TOKEN_SOURCE": "env",

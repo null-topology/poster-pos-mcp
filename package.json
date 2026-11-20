@@ -1,6 +1,6 @@
 {
   "name": "poster-mcp",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "MCP remoto poster-rush: lectura y escritura controlada de las cuentas Póster POS de la red RUSH",
   "type": "module",

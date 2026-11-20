@@ -194,7 +194,7 @@ El servidor corre sin clonar el repositorio: `npx` descarga el repositorio en un
 compila TypeScript con el script `prepare` y arranca el servidor. Con las variables de arriba en el entorno:
 
 ```bash
-npx -y github:null-topology/poster-pos-mcp#v0.5.1
+npx -y github:null-topology/poster-pos-mcp#v0.5.2
 ```
 
 - Requiere Node.js 20 o superior, `git` en el `PATH` y scripts de instalación habilitados (sin `--ignore-scripts`).
@@ -214,7 +214,7 @@ Para que un cliente MCP lance el servidor él mismo por stdio, define `MCP_TRANS
   "mcpServers": {
     "poster": {
       "command": "npx",
-      "args": ["-y", "github:null-topology/poster-pos-mcp#v0.5.1"],
+      "args": ["-y", "github:null-topology/poster-pos-mcp#v0.5.2"],
       "env": {
         "MCP_TRANSPORT": "stdio",
         "TOKEN_SOURCE": "env",
