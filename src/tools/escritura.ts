@@ -80,6 +80,18 @@ async function ejecutar(ctx: Contexto, a: BaseEscritura, construir: () => Promis
       }
       throw new EscrituraIncierta(`Póster respondió sin error y sin response${resumen}`);
     }
+    if (r.response === false || r.response === null) {
+      // No error, but no result either, whatever `success` says: nothing shows the write was applied or rejected.
+      let resumen = "";
+      try {
+        resumen = ` Reply: ${resumenPoster(r)}`;
+      } catch {
+        // The reply cannot be formatted; the message goes without it.
+      }
+      throw new EscrituraIncierta(
+        `Poster returned no result; the write may or may not have been applied. Check with a read before any retry.${resumen}`,
+      );
+    }
     // The write went through: a failed read-back must not turn it into an error, or a retry duplicates it.
     let verificacion: { ok: boolean; detalle: unknown };
     let aviso: string | undefined;
